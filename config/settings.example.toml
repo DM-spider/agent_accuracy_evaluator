@@ -7,12 +7,12 @@ open_browser = true
 
 [database]
 env_file = ""
-# 只读账号。密码请放环境变量 EVAL_DB_PASSWORD，不要写入本文件。
+# 只读账号。密码填写在本机 settings.toml 中，该文件不会提交到 Git。
 host = "127.0.0.1"
 port = 5432
 name = "example_db"
 user = ""
-password_env = "EVAL_DB_PASSWORD"
+password = ""
 timeout_seconds = 30
 max_rows = 5000
 connect_timeout = 15

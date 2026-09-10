@@ -2,12 +2,12 @@
 import evaluator.settings as settings_mod
 
 
-def test_db_password_falls_back_to_persistent_user_environment(monkeypatch):
-    monkeypatch.delenv("EVAL_DB_PASSWORD", raising=False)
-    monkeypatch.setattr(settings_mod, "_persistent_user_env", lambda name: "registry-secret")
+def test_db_password_reads_only_settings_file(monkeypatch):
+    monkeypatch.setenv("EVAL_DB_PASSWORD", "environment-secret")
 
     password = settings_mod.db_password(
-        {"database": {"password_env": "EVAL_DB_PASSWORD"}}
+        {"database": {"password": "settings-secret", "password_env": "EVAL_DB_PASSWORD"}}
     )
 
-    assert password == "registry-secret"
+    assert password == "settings-secret"
+    assert settings_mod.db_password({"database": {"password_env": "EVAL_DB_PASSWORD"}}) == ""

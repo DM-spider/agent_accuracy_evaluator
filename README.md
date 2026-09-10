@@ -29,7 +29,7 @@ if not exist config\settings.toml copy config\settings.example.toml config\setti
 
 然后编辑 `config\settings.toml`：
 
-- `[database]` 填只读账号；**密码放环境变量 `EVAL_DB_PASSWORD`**，不写入文件
+- `[database]` 填只读账号和 `password`；实际密码只保存在被 Git 忽略的本机 `config/settings.toml`
 - `[agent] url` 填智能体问答接口；**密钥放环境变量 `EVAL_AGENT_TOKEN`**
 - 实时模式走业务平台会话时，按 [真实接口接入使用说明](docs/真实接口接入使用说明.md) 粘贴 `platform.curl`
 

@@ -68,27 +68,8 @@ def load_settings(path: Path | None = None) -> Dict[str, Any]:
     return settings
 
 
-def _persistent_user_env(name: str) -> str:
-    """读取 Windows 用户级持久环境变量，兼容未刷新环境的启动进程。"""
-    if os.name != "nt" or not name:
-        return ""
-    try:
-        import winreg
-
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            value, _ = winreg.QueryValueEx(key, name)
-        return str(value) if value is not None else ""
-    except (ImportError, OSError, TypeError):
-        return ""
-
-
 def db_password(settings: Dict[str, Any]) -> str:
-    env_name = settings.get("database", {}).get("password_env", "EVAL_DB_PASSWORD")
-    return (
-        os.environ.get(env_name, "")
-        or _persistent_user_env(env_name)
-        or settings.get("database", {}).get("password", "")
-    )
+    return settings.get("database", {}).get("password", "")
 
 
 def agent_token(settings: Dict[str, Any]) -> str:
