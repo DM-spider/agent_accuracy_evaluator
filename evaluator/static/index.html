@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>数值准确性测评</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260910">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">漏损问数核验台 <small>Numeric Audit Bench</small></div>
+    <nav class="nav">
+      <button class="btn" id="new-run">新建测评</button>
+    </nav>
+  </header>
+  <main class="page" data-page="index">
+    <h1>历史测评批次</h1>
+    <p class="muted">必答格全部对齐且无错值记为合格；漏行漏列记为部分作答；明细被收成汇总记为不合格。可在题目详情中人工平反。</p>
+    <div id="health" class="card" style="margin:16px 0"></div>
+    <div id="platform-status" role="status"></div>
+    <button class="btn ghost" id="confirm-idle" hidden>确认网页任务已结束，解除暂停</button>
+    <div id="run-list"></div>
+  </main>
+  <div class="dialog-backdrop" id="dialog">
+    <div class="dialog">
+      <h2>新建测评</h2>
+      <label>模式</label>
+      <select id="mode">
+        <option value="mock_mixed">模拟 20 题</option>
+        <option value="live">实时调用智能体与数据库</option>
+      </select>
+      <p class="kicker" id="mock-hint" style="margin:8px 0 0">模拟包固定 20 题：10 题正确，10 题错值或漏行。</p>
+      <div id="scope-fields" hidden>
+        <label>题目范围</label>
+        <select id="scope">
+          <option value="sequential10">顺序 10 题</option>
+          <option value="random10">随机 10 题</option>
+          <option value="custom">指定题号</option>
+          <option value="all">全部</option>
+        </select>
+        <div id="custom-ids" hidden>
+          <label>指定题号（逗号分隔）</label>
+          <input id="case-ids" placeholder="CX-001, LS-001, DMA-001">
+        </div>
+      </div>
+      <label>基准时间（实时：当前时间；模拟：黄金集时间）</label>
+      <input id="anchor" placeholder="2026-08-17T10:00:00+08:00">
+      <label>智能体名称</label>
+      <input id="agent-name" value="water-loss-agent">
+      <p id="start-error" role="alert"></p>
+      <div style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end">
+        <button class="btn ghost" id="cancel">取消</button>
+        <button class="btn" id="confirm">开始</button>
+      </div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

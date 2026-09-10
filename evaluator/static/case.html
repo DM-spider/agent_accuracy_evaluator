@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>题目详情</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260910b">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">漏损问数核验台 <small>Case dossier</small></div>
+    <nav class="nav pager">
+      <a class="btn ghost" id="back">返回概览</a>
+      <a class="btn ghost" id="prev">上一题</a>
+      <a class="btn ghost" id="next">下一题</a>
+    </nav>
+  </header>
+  <main class="page" data-page="case">
+    <p class="kicker" id="case-kicker"></p>
+    <div class="case-heading">
+      <h1 id="case-title"></h1>
+      <div id="case-stamp" class="verdict-switch">
+        <button type="button" class="verdict-btn" data-verdict="QUALIFIED" id="verdict-qualified"><span class="verdict-stamp">平反</span><span class="verdict-btn-label">合格</span></button>
+        <button type="button" class="verdict-btn" data-verdict="PARTIAL" id="verdict-partial"><span class="verdict-stamp">平反</span><span class="verdict-btn-label">部分作答</span></button>
+        <button type="button" class="verdict-btn" data-verdict="UNQUALIFIED" id="verdict-unqualified"><span class="verdict-stamp">平反</span><span class="verdict-btn-label">不合格</span></button>
+        <button type="button" class="verdict-btn" data-verdict="UNEVALUABLE" id="verdict-unevaluable"><span class="verdict-stamp">平反</span><span class="verdict-btn-label">无法评估</span></button>
+      </div>
+    </div>
+    <p id="case-question"></p>
+    <div class="evidence" id="evidence">
+      <section class="pane">
+        <header><strong>智能体返回结果</strong></header>
+        <div class="body" id="agent-result"></div>
+      </section>
+      <section class="pane">
+        <header><strong>SQL 真实结果</strong></header>
+        <div class="body" id="sql-result"></div>
+      </section>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="tabs">
+        <button class="active" data-tab="diff">结果对比</button>
+        <button data-tab="agent">智能体请求与返回</button>
+        <button data-tab="sql">SQL 查询</button>
+        <button data-tab="caliber">数据口径对齐</button>
+        <button data-tab="logs">执行记录</button>
+      </div>
+      <div class="tab-panel active" id="tab-diff"></div>
+      <div class="tab-panel" id="tab-agent"></div>
+      <div class="tab-panel" id="tab-sql"></div>
+      <div class="tab-panel" id="tab-caliber"></div>
+      <div class="tab-panel" id="tab-logs"></div>
+    </div>
+  </main>
+  <script src="/static/app.js?v=20260910e"></script>
+</body>
+</html>

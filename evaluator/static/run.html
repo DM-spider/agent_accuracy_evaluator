@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>测评概览</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260910">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">漏损问数核验台 <small>Overview</small></div>
+    <nav class="nav">
+      <a class="btn ghost" href="/">全部批次</a>
+      <button class="btn ghost" id="export-json">导出 JSON</button>
+      <button class="btn ghost" id="export-xlsx">导出 Excel</button>
+      <button class="btn" id="export-html">离线 HTML</button>
+    </nav>
+  </header>
+  <main class="page" data-page="run">
+    <p class="kicker" id="run-meta">运行中</p>
+    <div id="run-progress" class="progress-panel" hidden></div>
+    <h1 id="run-title">评估指标</h1>
+    <div class="grid metrics" id="metric-cards"></div>
+    <div class="status-strip" id="status-summary"></div>
+    <div class="card">
+      <h2>题目结果</h2>
+      <div class="filters">
+        <input id="q" placeholder="题号 / 问题关键词">
+        <select id="status">
+          <option value="">全部状态</option>
+          <option value="QUALIFIED">合格</option>
+          <option value="PARTIAL">部分作答</option>
+          <option value="UNQUALIFIED">不合格</option>
+          <option value="UNEVALUABLE">无法评估</option>
+        </select>
+        <select id="result-type">
+          <option value="">全部结果类型</option>
+          <option value="stat">统计值</option>
+          <option value="detail">明细</option>
+        </select>
+      </div>
+      <div id="case-table"></div>
+    </div>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

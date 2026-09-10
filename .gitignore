@@ -1,0 +1,34 @@
+# ===== 数据文件（不入 git，单独私发；放回 <工具>/data/golden/ 原位）=====
+/data/
+
+# ===== 凭证与本地配置（绝不入库，拉取方按 settings.example.toml 自建）=====
+/config/settings.toml
+/settings.toml
+.env
+.env.*
+*.env
+
+# ===== 运行产物（启动时自动重建，见 evaluator/paths.py ensure_runtime）=====
+/runtime/
+/dist/
+/build/
+*.spec
+
+# ===== Python 缓存 =====
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+
+# ===== 调试临时脚本 =====
+scratch_*.py
+
+# ===== 编辑器 / 系统文件 =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini

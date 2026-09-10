@@ -1,0 +1,8 @@
+{
+  "comment": "组织上下级关系。comparison_policy=independent：比较与计分时上级与下级互为独立行，不做汇总合并；本文件仅用于 POSSIBLE_ORG_ROLLUP（疑似把子单位并入上级统计）的诊断提示。",
+  "comparison_policy": "independent",
+  "parents": {
+    "坪地供水": "龙岗水务集团",
+    "莲塘供水": "罗湖分公司"
+  }
+}

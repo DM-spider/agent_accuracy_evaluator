@@ -1,0 +1,60 @@
+[app]
+host = "127.0.0.1"
+port = 8765
+timezone = "Asia/Shanghai"
+contract_version = "v3"
+open_browser = true
+
+[database]
+env_file = ""
+# 只读账号。密码请放环境变量 EVAL_DB_PASSWORD，不要写入本文件。
+host = "127.0.0.1"
+port = 5432
+name = "example_db"
+user = ""
+password_env = "EVAL_DB_PASSWORD"
+timeout_seconds = 30
+max_rows = 5000
+connect_timeout = 15
+
+[agent]
+# 智能体问答 HTTP 接口。密钥放环境变量 EVAL_AGENT_TOKEN。
+url = ""
+method = "POST"
+timeout_seconds = 90
+retries = 2
+retry_backoff_seconds = 1.5
+concurrency = 3
+token_env = "EVAL_AGENT_TOKEN"
+header_name = "Authorization"
+header_template = "Bearer {token}"
+answer_path = "answer"
+request_template = """
+{
+  "question": "{question}",
+  "case_id": "{case_id}",
+  "anchor_time": "{anchor_time}",
+  "timezone": "{timezone}"
+}
+"""
+
+[watermark]
+enabled = true
+timestamp_columns = ["updated_at", "sjsj", "etl_time", "load_time", "modify_time"]
+
+[extractor]
+enable_llm = false
+
+[paths]
+# 留空则使用本工具 data/golden 与 runtime/，不引用工具目录外的数据
+golden_dir = ""
+runtime_dir = ""
+[platform]
+# Paste the full browser "Copy as cURL (bash)" between the triple single quotes.
+# This is the only source for platform session identifiers and login credentials.
+curl = '''
+'''
+enabled = true
+read_timeout_seconds = 60
+total_timeout_seconds = 300
+trust_env = false
