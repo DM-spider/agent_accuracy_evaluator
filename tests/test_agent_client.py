@@ -3,7 +3,7 @@ import json
 
 import httpx
 
-from evaluator.agent_client import AgentClient
+from evaluator.agent_client import AgentClient, client_from_settings
 from evaluator.models import CaseContract, MeasureSpec
 from evaluator.run_context import build_run_context
 
@@ -67,3 +67,11 @@ def test_timeout_non200_path_error_and_retry():
     client2 = AgentClient("http://agent/ask", transport=httpx.MockTransport(bad_path), retries=0, sleep=lambda _s: None)
     ans2 = client2.ask(_case(), _ctx())
     assert ans2.error
+
+
+def test_client_from_settings_reads_token_from_settings(monkeypatch):
+    monkeypatch.setenv("EVAL_AGENT_TOKEN", "environment-token")
+    client = client_from_settings(
+        {"agent": {"url": "http://agent/ask", "token": "settings-token"}}
+    )
+    assert client.headers["Authorization"] == "Bearer settings-token"

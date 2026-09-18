@@ -52,6 +52,144 @@ MOCK_AGENT_URL = "http://mock-agent/ask"
 HEADING_RE = re.compile(r"^## ([A-Z]{2,}\d+)\b", re.M)
 
 
+def expected_table(case: dict) -> tuple:
+    """把黄金集 expected 转成页面可展示的表格（Mock 未连库时用）。"""
+    exp = case.get("expected") or {}
+    columns: list = []
+    rows: list = []
+    fields = exp.get("fields") or []
+    detail_rows = list((exp.get("detail") or {}).get("rows") or [])
+    if fields and not detail_rows:
+        columns = ["指标", "数值", "单位"]
+        for field in fields:
+            rows.append({
+                "指标": field.get("label") or field.get("key"),
+                "数值": field.get("value"),
+                "单位": field.get("unit") or "",
+            })
+        return columns, rows
+    if detail_rows:
+        columns = list(detail_rows[0].keys())
+        rows = detail_rows
+        if fields:
+            extra = {field.get("label") or field.get("key"): field.get("value") for field in fields}
+            rows = [extra] + rows
+            for key in extra:
+                if key not in columns:
+                    columns.insert(0, key)
+        return columns, rows
+    return [], []
+
+
+KIND_TO_ISSUE_CODE = {
+    "WRONG_VALUE": "WRONG_VALUE",
+    "MISSING": "MISSING_ROW",
+    "MISSING_ROW": "MISSING_ROW",
+    "MISSING_FIELD": "MISSING_FIELD",
+    "PERIOD_MISMATCH": "PERIOD_MISMATCH",
+    "SCOPE_MISMATCH": "SCOPE_MISMATCH",
+    "GRAIN_MISMATCH": "GRAIN_MISMATCH",
+    "UNIT_MISMATCH": "UNIT_MISMATCH",
+    "CALIBER_MISMATCH": "CALIBER_MISMATCH",
+}
+
+CODE_TO_DIMENSION = {
+    "MISSING_FIELD": "field_coverage",
+    "MISSING_ROW": "row_coverage",
+    "WRONG_VALUE": "numeric_accuracy",
+    "PERIOD_MISMATCH": "period",
+    "SCOPE_MISMATCH": "scope",
+    "GRAIN_MISMATCH": "grain",
+    "UNIT_MISMATCH": "unit_caliber",
+    "CALIBER_MISMATCH": "unit_caliber",
+}
+
+
+def mixed_outcomes() -> Dict[str, Dict[str, str]]:
+    return {
+        case_id: {
+            "verdict": "UNQUALIFIED",
+            "issue_code": KIND_TO_ISSUE_CODE.get(info.get("kind") or "", "WRONG_VALUE"),
+            "summary": info.get("note") or "",
+        }
+        for case_id, info in PLANTED_ERRORS.items()
+    }
+
+
+class FixtureLlmEvaluator:
+    """模拟/UI 演示用的确定性评估器。不联网，不参与实时测评。"""
+
+    provider = "fixture"
+
+    def __init__(
+        self,
+        outcomes: Optional[Dict[str, Dict[str, str]]] = None,
+        *,
+        default_verdict: str = "QUALIFIED",
+        default_issue_code: Optional[str] = None,
+        model: str = "mock-llm",
+        prompt_version: str = "mock-v1",
+    ):
+        self.outcomes = outcomes or {}
+        self.default_verdict = default_verdict
+        self.default_issue_code = default_issue_code
+        self.model = model
+        self.prompt_version = prompt_version
+
+    def evaluate(self, evidence, contract=None):
+        from evaluator.llm_evaluation import artifact_from_evaluation
+        from evaluator.models import (
+            REQUIRED_DIMENSIONS,
+            DimensionEvaluation,
+            EvaluationDifference,
+            LlmEvaluationResult,
+        )
+
+        payload = evidence.payload
+        case_id = payload.get("case_id")
+        outcome = self.outcomes.get(case_id) or {}
+        verdict = str(outcome.get("verdict") or self.default_verdict).upper()
+        code = outcome.get("issue_code") or self.default_issue_code
+        if verdict == "QUALIFIED":
+            code = None
+        if verdict in {"UNQUALIFIED", "PARTIAL"} and not code:
+            code = "WRONG_VALUE"
+        dimensions = {key: DimensionEvaluation(status="MATCH") for key in REQUIRED_DIMENSIONS}
+        if code and code in CODE_TO_DIMENSION:
+            status = "PARTIAL" if code in {"MISSING_FIELD", "MISSING_ROW"} else "MISMATCH"
+            dimensions[CODE_TO_DIMENSION[code]] = DimensionEvaluation(status=status, reason=outcome.get("summary") or "")
+        differences = []
+        if code:
+            differences.append(
+                EvaluationDifference(
+                    type=code,
+                    severity="WARNING" if code in {"MISSING_FIELD", "MISSING_ROW"} else "ERROR",
+                    field=outcome.get("field") or "",
+                    agent_value=outcome.get("agent_value"),
+                    sql_value=outcome.get("sql_value"),
+                    evidence=outcome.get("summary") or "模拟评估",
+                    explanation=outcome.get("summary") or "模拟数据中的预设差异",
+                )
+            )
+        result = LlmEvaluationResult(
+            overall_verdict=verdict,
+            confidence=0.99 if verdict in {"QUALIFIED", "UNQUALIFIED"} else 0.8,
+            summary=outcome.get("summary") or ("模拟评估：与 SQL 基准一致" if verdict == "QUALIFIED" else "模拟评估：存在预设差异"),
+            primary_issue_code=code,
+            issue_codes=[code] if code else [],
+            dimensions=dimensions,
+            differences=differences,
+            needs_human_review=False,
+        )
+        return artifact_from_evaluation(
+            result,
+            provider=self.provider,
+            model=self.model,
+            prompt_version=self.prompt_version,
+            input_hash=evidence.input_hash,
+        )
+
+
 def script_path() -> Path:
     for candidate in (
         TOOL_ROOT / "docs" / SCRIPT_NAME,

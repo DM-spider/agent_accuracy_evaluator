@@ -418,3 +418,32 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 [data-page="case"] #tab-sql .query-summary {
   text-align: left !important;
 }
+
+/* ===== LLM 结果对比（唯一自动结论来源）===== */
+.llm-overall { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding: 6px 0 14px; }
+.llm-overall .result-tag { font-size: 16px; }
+.llm-confidence { color: var(--muted); font-size: 13px; }
+.llm-summary { flex: 1 1 320px; min-width: 200px; font-size: 14px; line-height: 1.6; }
+.llm-dimensions { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px 16px; margin-bottom: 14px; }
+.llm-dim { display: grid; grid-template-columns: 70px 56px minmax(0, 1fr); align-items: center; gap: 8px; padding: 6px 10px; background: #fff; border: 1px solid var(--line); font-size: 13px; }
+.llm-dim-name { color: var(--muted); }
+.llm-dim-status { text-align: center; font-weight: 600; }
+.llm-dim-status.MATCH { color: var(--stamp-pass); }
+.llm-dim-status.PARTIAL { color: var(--stamp-partial); }
+.llm-dim-status.MISMATCH { color: var(--stamp-fail); }
+.llm-dim-status.UNKNOWN, .llm-dim-status.NA { color: var(--muted); font-weight: 400; }
+.llm-dim-reason { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.llm-differences { margin-top: 4px; }
+.llm-differences th, .llm-differences td { min-width: 84px; }
+.llm-differences td:last-child { min-width: 220px; }
+.llm-meta { margin: 12px 0 0; font-size: 12px; color: var(--muted); }
+
+/* ===== 评估指标页 · 问题定位 ===== */
+.dimension-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 8px; margin: 10px 0; }
+.dim-metric { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; padding: 8px 12px; background: #fff; border: 1px solid var(--line); font-size: 13px; }
+.dim-metric strong { font-weight: 600; color: var(--muted); }
+.dim-metric span { font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) {
+  .llm-dimensions { grid-template-columns: 1fr; }
+  .dimension-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

@@ -6,7 +6,6 @@ import pytest
 from evaluator.agent_client import redact_headers
 from evaluator.answer_context import align_answer, params_for_period
 from evaluator.contract_loader import CONTRACTS_PATH, load_contracts
-from evaluator.extractor import extract_claims, claims_from_sql_rows
 from evaluator.models import CaseStatus, RunStatus, SqlSnapshot
 from evaluator.orchestrator import Orchestrator
 from evaluator.repository import Repository
@@ -121,9 +120,6 @@ def test_period_primary_scope_and_organization(contract, ctx):
     assert "ORGANIZATION_MISMATCH" in info["issues"]
     assert "PERIOD_FALLBACK_REVIEW" in info["issues"]
     assert "年累计" not in block
-    values = {c.metric: c.value for c in extract_claims(contract, block)}
-    assert values == pytest.approx({"供水量": 50380000, "售水量": 44411900, "产销差率": 11.85})
-    assert claims_from_sql_rows(contract, [{"supply": 50380000}])[0].value == 50380000
 
 
 def test_safe_tool_time_hint_without_retaining_payload():
@@ -256,7 +252,7 @@ def test_same_session_ten_sequential_and_independent_results(tmp_path, contract,
     assert [c["turn_index"] for c in rows] == list(range(1, 11))
     detail = repo.load_case_detail(ctx.run_id, "Q0")
     assert detail["sql_snapshot"]["rows"]
-    assert detail["result"]["alignment"]["conditional_numeric_status"] == "PASS"
+    assert detail["result"]["alignment"]["period_source"] == "agent_answer"
 
 
 def test_unknown_completion_stops_remaining_nine(tmp_path, contract, ctx):
@@ -296,7 +292,7 @@ def test_unaligned_answer_still_queries_and_compares(tmp_path, contract, ctx):
     assert len(calls) == 1
     assert calls[0] == detail["alignment"]["requested_params"]
     assert detail["sql_snapshot"]["rows"] == [{"supply": 123, "sales": 100, "rate": 0.1}]
-    assert detail["result"]["comparison_items"]
+    assert detail["result"]["alignment"]["alignment_status"]
     assert detail["result"]["not_scored_reason"] != "CONTEXT_UNCONFIRMED"
     assert summary.review_cases == 1
 

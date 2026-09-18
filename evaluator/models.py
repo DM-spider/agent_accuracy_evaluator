@@ -9,22 +9,69 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-class ClaimStatus(str, Enum):
-    MATCH = "MATCH"
-    MATCH_WITH_TOLERANCE = "MATCH_WITH_TOLERANCE"
-    WRONG_VALUE = "WRONG_VALUE"
-    MISSING = "MISSING"
-    UNEXPECTED = "UNEXPECTED"
-    UNPARSEABLE = "UNPARSEABLE"
-    CALIBER_MISMATCH = "CALIBER_MISMATCH"
-
-
 class CaseStatus(str, Enum):
     PASS = "PASS"
     PARTIAL = "PARTIAL"
     FAIL = "FAIL"
     REVIEW = "REVIEW"
     NOT_SCORED = "NOT_SCORED"
+
+
+class EvaluationVerdict(str, Enum):
+    QUALIFIED = "QUALIFIED"
+    PARTIAL = "PARTIAL"
+    UNQUALIFIED = "UNQUALIFIED"
+    UNEVALUABLE = "UNEVALUABLE"
+
+
+class DimensionStatus(str, Enum):
+    MATCH = "MATCH"
+    PARTIAL = "PARTIAL"
+    MISMATCH = "MISMATCH"
+    UNKNOWN = "UNKNOWN"
+    NA = "NA"
+
+
+REQUIRED_DIMENSIONS: tuple = (
+    "period",
+    "scope",
+    "grain",
+    "field_coverage",
+    "row_coverage",
+    "numeric_accuracy",
+    "unit_caliber",
+)
+
+ISSUE_CODES: tuple = (
+    "PERIOD_MISMATCH",
+    "SCOPE_MISMATCH",
+    "GRAIN_MISMATCH",
+    "MISSING_FIELD",
+    "MISSING_ROW",
+    "WRONG_VALUE",
+    "UNIT_MISMATCH",
+    "CALIBER_MISMATCH",
+    "CONTRADICTORY_TEXT",
+    "INSUFFICIENT_EVIDENCE",
+    "LLM_CALL_FAILED",
+    "LLM_RESPONSE_INVALID",
+    "LLM_INPUT_TOO_LARGE",
+)
+
+# 主要问题优先级：越靠前越优先归因，避免日期筛选错误被统计成大量数值错误。
+PRIMARY_ISSUE_PRIORITY: tuple = (
+    "PERIOD_MISMATCH",
+    "SCOPE_MISMATCH",
+    "GRAIN_MISMATCH",
+    "CALIBER_MISMATCH",
+    "UNIT_MISMATCH",
+    "MISSING_FIELD",
+    "MISSING_ROW",
+    "WRONG_VALUE",
+    "CONTRADICTORY_TEXT",
+)
+
+PRIMARY_ISSUE_ORDER = {code: index for index, code in enumerate(PRIMARY_ISSUE_PRIORITY)}
 
 
 class RunStatus(str, Enum):
@@ -189,63 +236,6 @@ class RunContext(BaseModel):
     bind_params: Dict[str, Any] = Field(default_factory=dict)
 
 
-class NumericClaim(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    claim_id: str = ""
-    case_id: str
-    source: str
-    coordinates: Dict[str, str] = Field(default_factory=dict)
-    metric: str
-    raw_value: Optional[str] = None
-    value: Optional[float] = None
-    unit: str = ""
-    evidence: str = ""
-    extractor: str = ""
-    aggregation: str = ""
-    period: str = ""
-    period_role: str = ""
-    scale_token: str = ""
-    conversion_factor: Optional[float] = None
-    confidence: str = "deterministic"
-    evidence_start: Optional[int] = None
-    evidence_end: Optional[int] = None
-
-    @field_validator("source")
-    @classmethod
-    def _source(cls, value: str) -> str:
-        if value not in {"agent", "sql"}:
-            raise ValueError("source must be 'agent' or 'sql'")
-        return value
-
-    @field_validator("confidence")
-    @classmethod
-    def _confidence(cls, value: str) -> str:
-        if value not in {"deterministic", "heuristic", "llm", "unparseable"}:
-            raise ValueError("invalid confidence")
-        return value
-
-
-class ComparisonItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    coordinates: Dict[str, str] = Field(default_factory=dict)
-    metric: str
-    expected_value: Optional[float] = None
-    actual_value: Optional[float] = None
-    expected_raw: Optional[str] = None
-    actual_raw: Optional[str] = None
-    delta: Optional[float] = None
-    tolerance: Optional[float] = None
-    status: ClaimStatus
-    evidence: str = ""
-    evidence_claim_id: str = ""
-    unit: str = ""
-    note: str = ""
-    aggregation: str = ""
-    normalization_rule: str = ""
-
-
 class CaseMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -260,6 +250,111 @@ class CaseMetrics(BaseModel):
     required_claims: int = 0
     returned_required: int = 0
     auto_resolved: bool = True
+
+
+class DimensionEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: DimensionStatus
+    reason: str = ""
+
+
+class EvaluationDifference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str
+    severity: str = "ERROR"
+    coordinate: Dict[str, str] = Field(default_factory=dict)
+    field: str = ""
+    agent_value: Any = None
+    sql_value: Any = None
+    normalized_agent_value: Optional[float] = None
+    normalized_sql_value: Optional[float] = None
+    delta: Optional[float] = None
+    evidence: str = ""
+    explanation: str = ""
+
+    @field_validator("type")
+    @classmethod
+    def _type(cls, value: str) -> str:
+        if value not in ISSUE_CODES:
+            raise ValueError(f"unknown issue code: {value}")
+        return value
+
+    @field_validator("severity")
+    @classmethod
+    def _severity(cls, value: str) -> str:
+        if value not in {"ERROR", "WARNING"}:
+            raise ValueError("severity 只能是 ERROR 或 WARNING")
+        return value
+
+    @field_validator("explanation")
+    @classmethod
+    def _explanation(cls, value: str) -> str:
+        if len(value or "") > 120:
+            raise ValueError("explanation 不能超过 120 个字符")
+        return value
+
+
+class LlmEvaluationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "v1"
+    overall_verdict: EvaluationVerdict
+    confidence: float
+    summary: str = ""
+    primary_issue_code: Optional[str] = None
+    issue_codes: List[str] = Field(default_factory=list)
+    dimensions: Dict[str, DimensionEvaluation]
+    differences: List[EvaluationDifference] = Field(default_factory=list)
+    needs_human_review: bool = False
+
+    @field_validator("confidence")
+    @classmethod
+    def _confidence(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("confidence 必须在 0 到 1 之间")
+        return value
+
+    @field_validator("issue_codes")
+    @classmethod
+    def _issue_codes(cls, value: List[str]) -> List[str]:
+        unknown = [code for code in value if code not in ISSUE_CODES]
+        if unknown:
+            raise ValueError(f"unknown issue codes: {unknown}")
+        return list(dict.fromkeys(value))
+
+    @field_validator("primary_issue_code")
+    @classmethod
+    def _primary(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and value not in ISSUE_CODES:
+            raise ValueError(f"unknown primary issue code: {value}")
+        return value
+
+    @model_validator(mode="after")
+    def _dimensions_exact(self) -> "LlmEvaluationResult":
+        keys = tuple(self.dimensions)
+        if set(keys) != set(REQUIRED_DIMENSIONS):
+            missing = [key for key in REQUIRED_DIMENSIONS if key not in self.dimensions]
+            extra = [key for key in keys if key not in REQUIRED_DIMENSIONS]
+            raise ValueError(f"dimensions 必须恰好包含七个固定维度 missing={missing} extra={extra}")
+        return self
+
+
+class LlmEvaluationArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evaluation: LlmEvaluationResult
+    provider: str = "openai-compatible"
+    model: str = ""
+    prompt_version: str = "v1"
+    input_hash: str = ""
+    created_at: str
+    latency_ms: int = 0
+    token_usage: Dict[str, int] = Field(default_factory=dict)
+    validation_notes: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    raw_response: Optional[str] = None
 
 
 class AgentAnswer(BaseModel):
@@ -320,7 +415,6 @@ class CaseResult(BaseModel):
     primary_failure: Optional[str] = None
     error_types: List[str] = Field(default_factory=list)
     metrics: CaseMetrics = Field(default_factory=CaseMetrics)
-    comparison_items: List[ComparisonItem] = Field(default_factory=list)
     agent_latency_ms: int = 0
     sql_latency_ms: int = 0
     retries: int = 0

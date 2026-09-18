@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,18 +13,30 @@ import httpx
 URL = "https://aiemployee.sz-water.com.cn/cc-control/api/user/mid-platform/session/message/stream"
 
 
+def _platform_default(name: str) -> str:
+    from evaluator.settings import load_settings, platform_login_session
+
+    settings = load_settings()
+    platform = settings.get("platform") or {}
+    if name == "login_session":
+        return platform_login_session(settings)
+    if name == "task_name":
+        return platform.get("task_name") or "leakage-skill"
+    return str(platform.get(name) or "")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--org-id", required=True)
-    parser.add_argument("--session-id", required=True)
-    parser.add_argument("--task-id", required=True)
-    parser.add_argument("--template-id", required=True)
-    parser.add_argument("--task-name", default="leakage-skill")
+    parser.add_argument("--org-id", default=_platform_default("org_id"))
+    parser.add_argument("--session-id", default=_platform_default("session_id"))
+    parser.add_argument("--task-id", default=_platform_default("task_id"))
+    parser.add_argument("--template-id", default=_platform_default("template_id"))
+    parser.add_argument("--task-name", default=_platform_default("task_name"))
     parser.add_argument("--message", required=True)
     args = parser.parse_args()
-    credential = os.environ.get("EVAL_PLATFORM_LOGIN_SESSION", "")
+    credential = _platform_default("login_session")
     if not credential:
-        parser.error("EVAL_PLATFORM_LOGIN_SESSION is required")
+        parser.error("请在 config/settings.toml 的 platform.curl 中配置登录会话")
     body = {
         "sessionId": args.session_id,
         "taskId": args.task_id,

@@ -50,6 +50,19 @@ const contextIssues = {
   SQL_BENCHMARK_INCOMPLETE: "SQL 基准结果不完整", DUPLICATE_COORDINATES: "指标坐标重复"
 };
 
+const dimensionLabels = {
+  period: "期间", scope: "范围", grain: "粒度", field_coverage: "字段",
+  row_coverage: "行覆盖", numeric_accuracy: "数值", unit_caliber: "单位口径"
+};
+const dimensionStatusLabels = {MATCH: "一致", PARTIAL: "部分", MISMATCH: "不一致", UNKNOWN: "未知", NA: "不适用"};
+const issueTypeLabels = {
+  PERIOD_MISMATCH: "期间不一致", SCOPE_MISMATCH: "范围不一致", GRAIN_MISMATCH: "粒度不一致",
+  MISSING_FIELD: "漏指标", MISSING_ROW: "漏行", WRONG_VALUE: "错值", UNIT_MISMATCH: "单位不一致",
+  CALIBER_MISMATCH: "口径不一致", CONTRADICTORY_TEXT: "回答自相矛盾", INSUFFICIENT_EVIDENCE: "证据不足",
+  LLM_CALL_FAILED: "评估调用失败", LLM_RESPONSE_INVALID: "评估返回非法", LLM_INPUT_TOO_LARGE: "证据超出上限",
+  NO_LLM_EVALUATION: "尚无评估"
+};
+
 function stamp(status) {
   const labels = {
     RUNNING: "运行中", PENDING: "等待中", COMPLETED: "已完成",
@@ -67,10 +80,10 @@ function verdictLabel(status) {
 }
 
 function verdictNote(c) {
-  if (c.reason_label) return c.reason_label;
+  if (c.reason_label) return c.summary || c.reason_label;
   if (c.final_verdict === "UNEVALUABLE" || c.auto_verdict === "UNEVALUABLE") return "无法自动比对";
-  if (c.final_verdict === "PARTIAL" || c.auto_verdict === "PARTIAL") return "同一粒度下漏行或漏列";
-  if (c.final_verdict === "QUALIFIED" || c.auto_verdict === "QUALIFIED") return "必答格全部对齐";
+  if (c.final_verdict === "PARTIAL" || c.auto_verdict === "PARTIAL") return "部分正确";
+  if (c.final_verdict === "QUALIFIED" || c.auto_verdict === "QUALIFIED") return "与 SQL 基准一致";
   return "与 SQL 不一致";
 }
 
@@ -173,6 +186,38 @@ function sqlTable(snapshot, resultsOnly = false) {
   return `<div class="kicker">${snapshot.source === "golden_expected" ? "未执行 SQL" : `耗时 ${snapshot.latency_ms || 0} ms`} · ${rows.length} 行${snapshot.truncated ? "（截断）" : ""}</div>${table}${more}`;
 }
 
+function renderLlmDiff(evaluation, judgment) {
+  const artifact = evaluation || {};
+  const data = artifact.evaluation || null;
+  if (!data) return '<p class="empty">本题尚无 LLM 评估结果</p>';
+  const verdict = (judgment || {}).final_verdict || data.overall_verdict;
+  const overridden = (judgment || {}).manual_verdict && judgment.manual_verdict !== judgment.auto_verdict;
+  const confidence = data.confidence;
+  const dimensions = data.dimensions || {};
+  const dimensionRows = Object.entries(dimensionLabels).map(([key, label]) => {
+    const dimension = dimensions[key] || {};
+    const status = dimension.status || "UNKNOWN";
+    return `<div class="llm-dim"><span class="llm-dim-name">${escapeHtml(label)}</span><span class="llm-dim-status ${status}">${escapeHtml(dimensionStatusLabels[status] || status)}</span><span class="llm-dim-reason" title="${escapeHtml(dimension.reason || "")}">${escapeHtml(dimension.reason || "")}</span></div>`;
+  }).join("");
+  const differences = (data.differences || []).map(item => {
+    const coordinate = Object.entries(item.coordinate || {}).map(([key, value]) => `${key}：${value}`).join(" · ") || "—";
+    const position = item.field ? `${coordinate} · ${item.field}` : coordinate;
+    return `<tr class="${item.severity === "ERROR" ? "wrong" : "review-row"}"><td>${escapeHtml(issueTypeLabels[item.type] || item.type)}</td><td>${escapeHtml(position)}</td><td>${escapeHtml(item.agent_value === null || item.agent_value === undefined ? "" : String(item.agent_value))}</td><td>${escapeHtml(item.sql_value === null || item.sql_value === undefined ? "" : String(item.sql_value))}</td><td>${escapeHtml(item.explanation || item.evidence || "")}</td></tr>`;
+  }).join("");
+  const meta = [artifact.model, artifact.prompt_version, localTime(artifact.created_at), artifact.latency_ms ? compactDuration(artifact.latency_ms) : ""].filter(Boolean).join(" · ");
+  return `<div class="llm-overall">
+      <span class="result-tag ${verdict}">${verdictLabel(verdict)}</span>
+      ${overridden ? '<span class="verdict-stamp">平反</span>' : ""}
+      <span class="llm-confidence">置信度 ${confidence === null || confidence === undefined ? "—" : Math.round(Number(confidence) * 100) + "%"}</span>
+      <span class="llm-summary">${escapeHtml(data.summary || "无结论说明")}</span>
+    </div>
+    <div class="llm-dimensions">${dimensionRows}</div>
+    ${differences.length
+      ? `<table class="llm-differences"><thead><tr><th>问题类型</th><th>位置 / 字段</th><th>智能体值</th><th>SQL 值</th><th>说明</th></tr></thead><tbody>${differences}</tbody></table>`
+      : '<p class="caliber-note">未记录差异项</p>'}
+    <p class="llm-meta">${escapeHtml(meta || "评估元信息未记录")}</p>`;
+}
+
 async function renderIndex() {
   const platform = await api("/api/platform/status");
   document.getElementById("platform-status").textContent = `真实接口：${platform.enabled ? "流式" : "普通 HTTP"} · Cookie：${platform.cookie_configured ? "已配置" : "未配置"} · 会话：${platform.active ? "运行中" : platform.blocked ? "会话占用或状态待确认" : "空闲"}`;
@@ -183,6 +228,7 @@ async function renderIndex() {
       <div><div class="label">黄金集</div><strong>${health.golden}</strong></div>
       <div><div class="label">本地存储</div><strong>${health.storage}</strong></div>
       <div><div class="label">数据库 / 智能体</div><strong>${health.database}</strong> / ${health.agent}</div>
+      <div><div class="label">评估 LLM</div><strong>${health.evaluator_llm || "—"}</strong></div>
     </div>`;
   const data = await api("/api/runs");
   const box = document.getElementById("run-list");
@@ -290,6 +336,26 @@ function renderRunProgress(progress, status) {
     <div class="progress-bar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${ratio}"><i style="width:${ratio}%"></i></div>`;
 }
 
+function renderDiagnostics(metrics) {
+  const dimensions = metrics.dimension_metrics || {};
+  const order = ["period", "scope", "grain", "field_coverage", "row_coverage", "numeric_accuracy", "unit_caliber"];
+  const strip = document.getElementById("dimension-metrics");
+  if (strip) {
+    strip.innerHTML = order.map(key => {
+      const item = dimensions[key] || {};
+      const label = (item.label || dimensionLabels[key] || key).replace("一致率", "").replace("完整率", "");
+      return `<span class="dim-metric" title="${escapeHtml(item.label || key)} · 可评估 ${item.evaluable || 0} 题"><strong>${escapeHtml(label)}</strong><span>${item.rate === null || item.rate === undefined ? "—" : pct(item.rate)}</span></span>`;
+    }).join("");
+  }
+  const box = document.getElementById("primary-issues");
+  if (box) {
+    const distribution = Object.entries(metrics.primary_issue_distribution || {}).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    box.textContent = distribution.length
+      ? "主要问题：" + distribution.map(([code, count]) => `${issueTypeLabels[code] || code} ${count}题`).join(" · ")
+      : "主要问题：暂无";
+  }
+}
+
 async function renderRun() {
   const runId = runIdFromPath();
   const poll = async () => {
@@ -312,6 +378,7 @@ async function renderRun() {
     const statuses = final.statuses || {};
     const statusLabels = [["QUALIFIED", "合格"], ["PARTIAL", "部分作答"], ["UNQUALIFIED", "不合格"], ["UNEVALUABLE", "无法评估"]];
     document.getElementById("status-summary").innerHTML = statusLabels.map(([key, label]) => `<span class="status-count ${key}">${label} <strong>${statuses[key] || 0}</strong></span>`).join("");
+    renderDiagnostics(e);
     await renderCaseTable(runId);
     if (run.status === "RUNNING" || run.status === "PENDING") setTimeout(poll, 1200);
   };
@@ -340,28 +407,17 @@ async function renderCaseTable(runId) {
     return;
   }
   const ranked = data.cases;
-  box.innerHTML = `<table><thead><tr><th>题号</th><th>结果</th><th>问题</th><th>耗时</th><th>结论说明</th></tr></thead><tbody>${
+  box.innerHTML = `<table><thead><tr><th>题号</th><th>结果</th><th>主要问题</th><th>问题</th><th>耗时</th><th>结论说明</th></tr></thead><tbody>${
     ranked.map(c => {
       const note = verdictNote(c);
       const question = c.question || "";
+      const issue = issueTypeLabels[c.primary_issue_code] || c.reason_label || "—";
       const agentMs = (c.agent_timings || {}).completed_ms ?? (c.agent_timings || {}).transport_total_ms ?? c.agent_latency_ms;
       const timing = `智能体 ${compactDuration(agentMs)} · SQL ${compactDuration(c.sql_latency_ms)}`;
-      return `<tr class="clickable" data-id="${c.case_id}"><td>${escapeHtml(c.case_id)}</td><td>${resultCell(c)}</td><td title="${escapeHtml(question)}">${escapeHtml(question)}</td><td title="${escapeHtml(timing)}">${escapeHtml(timing)}</td><td title="${escapeHtml(note)}">${escapeHtml(note)}</td></tr>`;
+      return `<tr class="clickable" data-id="${c.case_id}"><td>${escapeHtml(c.case_id)}</td><td>${resultCell(c)}</td><td>${escapeHtml(issue)}</td><td title="${escapeHtml(question)}">${escapeHtml(question)}</td><td title="${escapeHtml(timing)}">${escapeHtml(timing)}</td><td title="${escapeHtml(note)}">${escapeHtml(note)}</td></tr>`;
     }).join("")
   }</tbody></table>`;
   box.querySelectorAll("tr.clickable").forEach(tr => tr.addEventListener("click", () => location.href = `/runs/${runId}/cases/${tr.dataset.id}`));
-}
-
-function rowClass(status) {
-  if (status === "VALUE_MATCH_REVIEW") return "match";
-  if (status === "VALUE_DIFF_REVIEW") return "wrong";
-  if (["NO_BENCHMARK", "UNEXPECTED"].includes(status)) return "unavailable-row";
-  if (["FIELD_UNRECOGNIZED", "PERIOD_REVIEW", "CALIBER_REVIEW", "CALIBER_MISMATCH", "COORDINATE_REVIEW", "VALUE_UNPARSEABLE"].includes(status)) return "review-row";
-  if (status === "WRONG_VALUE") return "wrong";
-  if (status === "MISSING") return "missing";
-  if (status === "UNEXPECTED") return "unexpected";
-  if (status === "MATCH" || status === "MATCH_WITH_TOLERANCE") return "match";
-  return "";
 }
 
 async function renderCase() {
@@ -385,45 +441,7 @@ async function renderCase() {
   document.getElementById("sql-result").innerHTML = sqlTable(sql, true);
   const queryParams = Object.fromEntries(Object.entries(sql.params || alignment.sql_params || alignment.requested_params || {}).filter(([key]) => !key.startsWith("__text_")));
   const sqlNotice = supplemental ? `事后补查参考结果 · ${localTime(sql.finished_at)}（北京时间） · 不修改原评分` : alignment.query_purpose === "requested_context_reference" ? "按原请求期间查询，尚未与回答期间对齐，不参与评分" : "";
-  const reference = detail.table_comparison;
-  const items = (reference ? reference.items : result.comparison_items || []).slice();
-  const renderDiff = () => {
-    const labels = {MATCH: "一致", MATCH_WITH_TOLERANCE: "精度范围内一致", WRONG_VALUE: "数值不一致", MISSING: "回答缺失", UNEXPECTED: "SQL 无对应值", UNPARSEABLE: "数值未识别", FIELD_UNRECOGNIZED: "回答字段未识别", NO_BENCHMARK: "SQL 无对应值", PERIOD_REVIEW: "期间待确认", CALIBER_REVIEW: "口径待确认", CALIBER_MISMATCH: "单月/累计口径不一致", COORDINATE_REVIEW: "单位或坐标待确认", VALUE_UNPARSEABLE: "未返回有效数值", VALUE_MATCH_REVIEW: "数值一致（年份待确认）", VALUE_DIFF_REVIEW: "数值有差异（年份待确认）"};
-    const counts = Object.entries(items.reduce((out, i) => { const label = labels[i.status] || i.status; out[label] = (out[label] || 0) + 1; return out; }, {}));
-    const periodRange = params => {
-      const values = Object.entries(params || {}).filter(([key]) => key === "period" || /^period_\d+$/.test(key)).map(([, value]) => String(value)).sort();
-      return values.length === 0 ? "未明确" : values.length === 1 ? values[0] : `${values[0]} 至 ${values[values.length - 1]}`;
-    };
-    const periods = alignment.effective_period || (alignment.reported_periods || []).join(", ") || "未明确";
-    const requestedPeriod = alignment.requested_period || periodRange(alignment.requested_params);
-    const executedPeriod = alignment.sql_period || periodRange(queryParams);
-    const sourceLabels = {agent_answer: "回答明确", agent_tool: "工具参数", question_contract: "问题推定", database_fallback: "数据库回退", unresolved: "未确定"};
-    // 仅展示原值；标准化与数值比对在内部完成，结果列只呈现比对结论。
-    // 展示值剥离 Markdown 加粗等标记符号（如 **14.48%**），只显示数值本身
-    const displayValue = value => String(value == null ? "" : value).replace(/\*\*/g, "").trim();
-    const rows = items.map(i => `<tr class="${rowClass(i.status)}"><td>${escapeHtml(Object.values(i.coordinates || {}).join(" · ") || i.agent_period || i.sql_period || "汇总")}</td><td>${escapeHtml(i.metric)} ${escapeHtml(i.unit || "")}</td><td>${escapeHtml(displayValue(i.actual_raw || ""))}</td><td>${escapeHtml(displayValue(i.expected_raw))}</td><td>${escapeHtml(labels[i.status] || i.status)}</td><td>${escapeHtml(i.note || i.normalization_rule || i.mapping_reason || i.evidence || "")}</td></tr>`).join("");
-    // 字段映射诊断：表头 → 契约指标/维度；未映射列需人工确认
-    const mappingLabels = {MAPPED: "已映射", UNMAPPED: "未映射", NON_TARGET: "非本题基准指标"};
-    const kindLabels = {dimension: "维度", measure: "指标"};
-    const fieldMapping = (reference || {}).field_mapping || [];
-    const mappingRows = fieldMapping.map(row => {
-      const state = mappingLabels[row.status] || row.status;
-      const target = row.target_metric ? `${kindLabels[row.target_kind] || row.target_kind || ""} · ${row.target_metric}` : "—";
-      const method = row.mapping_method ? `${row.mapping_method}（${row.confidence || ""}）` : "—";
-      const candidates = (row.candidate_metrics || []).join("、") || "—";
-      return `<tr class="${row.status === "UNMAPPED" ? "review-row" : ""}"><td>${escapeHtml(row.source_column)}</td><td>${escapeHtml(state)}</td><td>${escapeHtml(target)}</td><td>${escapeHtml(method)}</td><td>${escapeHtml(candidates)}</td></tr>`;
-    }).join("");
-    const mappingTable = fieldMapping.length ? `<h3 class="section-title">字段映射</h3>
-    <table class="comparison-table mapping-table"><thead><tr><th>智能体字段</th><th>映射状态</th><th>标准指标 / 维度</th><th>映射方式</th><th>候选指标</th></tr></thead><tbody>${mappingRows}</tbody></table>` : "";
-    document.getElementById("tab-diff").innerHTML = `${reference ? `<p class="comparison-note">${reference.source === "recheck" ? "使用事后补查结果 · " : ""}逐项状态不改写原始证据</p>` : ""}
-    <div class="period-flow"><span>问题期间 <strong>${escapeHtml(String(requestedPeriod))}</strong></span><span>智能体采用 <strong>${escapeHtml(String(periods))}</strong></span><span>SQL执行 <strong>${escapeHtml(String(executedPeriod))}</strong></span><span>依据 <strong>${escapeHtml(sourceLabels[alignment.period_source] || "历史记录")}</strong></span></div>
-    <p class="kicker">${escapeHtml([...(reference?.issues || []), ...(alignment.issues || []).map(x => contextIssues[x] || x)].join("；"))}</p>
-    <p class="comparison-note">${counts.map(([label, count]) => `${escapeHtml(label)}：${count}`).join("　|　")}</p>
-    ${items.length ? `<table class="comparison-table"><thead><tr><th>单位 / 期间</th><th>指标</th><th>智能体值</th><th>SQL值</th><th>结果</th><th>说明</th></tr></thead><tbody>${rows}</tbody></table>` : ""}
-    ${items.length ? "" : '<p class="empty">暂无可展示的字段对比</p>'}
-    ${mappingTable}`;
-  };
-  renderDiff();
+  document.getElementById("tab-diff").innerHTML = renderLlmDiff(detail.llm_evaluation, judgment);
   const raw = (detail.agent_answer || {}).raw || {};
   const req = raw.request || {};
   const resp = raw.response || {};
@@ -469,7 +487,7 @@ async function renderCase() {
     } catch (error) { status.textContent = error.message; }
     finally { button.disabled = false; }
   };
-  const caliber = (reference || {}).caliber_alignment || {rules: [], rows: []};
+  const caliber = detail.caliber_alignment || {rules: [], rows: []};
   const caliberGroups = new Map();
   (caliber.rows || []).forEach(row => {
     const type = row.kind === "dimension" ? "维度" : "指标";

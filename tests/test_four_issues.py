@@ -1,14 +1,20 @@
 # -*- coding: utf-8 -*-
-from evaluator.answer_context import align_answer
-from evaluator.comparator import compare_claims
-from evaluator.extractor import extract_claims, claims_from_sql_rows
-from evaluator.models import CaseContract, ClaimStatus, MeasureSpec, RunContext, SqlSnapshot, Tolerance
-from evaluator.orchestrator import Orchestrator
-from evaluator.repository import Repository
-from evaluator.run_context import build_run_context
-from evaluator.sql_executor import SqlExecutor
+"""四类根因（期间/范围/粒度/口径）在答案期间对齐与 LLM 结论映射中的行为。"""
+import pytest
 
-from tests.test_stream_live import client_for, done
+from evaluator.answer_context import align_answer
+from evaluator.llm_evaluation import artifact_from_evaluation
+from evaluator.models import (
+    REQUIRED_DIMENSIONS,
+    CaseContract,
+    CaseStatus,
+    DimensionEvaluation,
+    LlmEvaluationResult,
+    MeasureSpec,
+    Tolerance,
+)
+from evaluator.run_context import build_run_context
+from evaluator.scorer import result_from_llm_evaluation
 
 
 def _cx005():
@@ -32,30 +38,6 @@ def _cx005():
             "产销差率目标差距": MeasureSpec(
                 label="产销差率目标差距", unit="pp", value_scale="pp", aggregation="actual_minus_target",
                 aliases=["与目标差距", "目标差距", "低于目标", "高于目标", "差距"], sql_column="gap",
-            ),
-        },
-    )
-
-
-def _cx003():
-    return CaseContract(
-        case_id="CX-003",
-        question="本月环水集团的供水量和售水量分别是多少万立方米？",
-        result_type="stat",
-        numeric_evaluable=True,
-        realtime_ready=True,
-        sql_template="SELECT supply, sales FROM t WHERE businessyearmonth=:period",
-        parameter_resolver="single_month",
-        measures={
-            "单月供水量": MeasureSpec(
-                label="单月供水量", unit="m³", value_scale="volume", aggregation="single_month",
-                aliases=["供水量", "年累计供水量", "累计供水量"], sql_column="supply",
-                tolerance=Tolerance(kind="rel", eps=0.001),
-            ),
-            "单月售水量": MeasureSpec(
-                label="单月售水量", unit="m³", value_scale="volume", aggregation="single_month",
-                aliases=["售水量", "年累计售水量", "累计售水量"], sql_column="sales",
-                tolerance=Tolerance(kind="rel", eps=0.001),
             ),
         },
     )
@@ -103,73 +85,59 @@ CX007_TEXT = """最新完整月份为2026年8月，7月→8月单月产销差率
 | 环比变化 | 0.29个百分点 |
 """
 
-CX003_TEXT = """| 指标 | 数值 |
-|---|---|
-| 年累计供水量 | 102,857 万立方米 |
-| 年累计售水量 | 94,725 万立方米 |
-"""
 
-
-def test_cx005_adopts_complete_month_and_extracts_aliases():
+def test_cx005_adopts_complete_month_and_moves_all_period_params():
     ctx = build_run_context("2026-09-07")
-    info, _ = align_answer(_cx005(), ctx, CX005_TEXT)
+    info, block = align_answer(_cx005(), ctx, CX005_TEXT)
     assert info["requested_period"] == 202609
     assert info["effective_period"] == 202608
     assert info["sql_params"]["period"] == 202608
-    claims = {c.metric: c for c in extract_claims(_cx005(), CX005_TEXT)}
-    assert abs(claims["年累计产销差率"].value - 7.91) < 1e-9
-    assert abs(claims["产销差率年度目标"].value - 12.0) < 1e-9
-    assert abs(claims["产销差率目标差距"].value + 4.09) < 1e-9
+    assert info["period_source"] == "agent_answer"
+    assert "年累计产销差率" in block
 
 
-def test_cx005_fallback_still_compares(tmp_path):
-    ctx = build_run_context("2026-09-07")
-    contract = _cx005()
-
-    class DB(SqlExecutor):
-        def query(self, sql_template, params=None):
-            if params["period"] == 202609:
-                return SqlSnapshot(params=params, columns=["年累计产销差率", "产销差率年度目标", "产销差率目标差距"],
-                                   rows=[{"年累计产销差率": None, "产销差率年度目标": None, "产销差率目标差距": None}],
-                                   row_count=1)
-            return SqlSnapshot(params=params, columns=["年累计产销差率", "产销差率年度目标", "产销差率目标差距"],
-                               rows=[{"年累计产销差率": 0.0790, "产销差率年度目标": 0.0790, "产销差率目标差距": 0}],
-                               row_count=1)
-
-    repo = Repository(tmp_path / "e.db", tmp_path / "runs")
-    orch = Orchestrator(repo, [contract], agent_client=client_for(done(CX005_TEXT)),
-                        sql_executor=DB(connect=lambda: None), mode="live", enable_watermark=False)
-    orch.start_run(ctx)
-    detail = repo.load_case_detail(ctx.run_id, "CX-005")
-    metrics = {item["metric"]: item for item in detail["result"]["comparison_items"]}
-    assert "产销差率年度目标" in metrics
-    assert "产销差率目标差距" in metrics
-    assert detail["result"]["not_scored_reason"] != "CONTEXT_UNCONFIRMED"
-    assert metrics["产销差率年度目标"]["status"] == "WRONG_VALUE"
-
-
-def test_cx007_parses_arrow_months_and_compares_items():
+def test_cx007_parses_arrow_months_and_previous_period():
     ctx = build_run_context("2026-09-07")
     info, _ = align_answer(_cx007(), ctx, CX007_TEXT)
     assert info["effective_period"] == 202608
     assert info["previous_period"] == 202607
     assert info["sql_params"]["period"] == 202608
     assert info["sql_params"]["period_prev"] == 202607
-    sql = claims_from_sql_rows(_cx007(), [{"rate": 0.0827, "prev_rate": 0.0798, "mom_change": 0.0029}])
-    agent = extract_claims(_cx007(), CX007_TEXT)
-    items = compare_claims(_cx007(), sql, agent)
-    by_metric = {item.metric: item for item in items if item.status is not ClaimStatus.UNEXPECTED}
-    assert set(by_metric) >= {"上期单月产销差率", "单月产销差率环比变化"}
-    assert all(item.status is not ClaimStatus.UNPARSEABLE for item in items)
 
 
-def test_cx003_wan_scale_and_caliber_mismatch():
-    agent = extract_claims(_cx003(), CX003_TEXT)
-    by_metric = {c.metric: c for c in agent}
-    assert abs(by_metric["单月供水量"].value - 1028570000) < 1e-6
-    assert abs(by_metric["单月售水量"].value - 947250000) < 1e-6
-    assert by_metric["单月供水量"].aggregation == "ytd"
-    sql = claims_from_sql_rows(_cx003(), [{"supply": 157439172.49, "sales": 144412263}])
-    items = compare_claims(_cx003(), sql, agent)
-    assert {item.status for item in items} == {ClaimStatus.CALIBER_MISMATCH}
-    assert all(item.note == "单月/累计口径不一致" for item in items)
+def _llm_artifact(code, dimension, status="MISMATCH"):
+    dimensions = {key: DimensionEvaluation(status="MATCH") for key in REQUIRED_DIMENSIONS}
+    dimensions[dimension] = DimensionEvaluation(status=status)
+    result = LlmEvaluationResult(
+        overall_verdict="UNQUALIFIED",
+        confidence=0.9,
+        summary=f"{code} 结论",
+        primary_issue_code=code,
+        issue_codes=[code],
+        dimensions=dimensions,
+        differences=[],
+        needs_human_review=False,
+    )
+    return artifact_from_evaluation(result, model="m", input_hash="h")
+
+
+@pytest.mark.parametrize(
+    "code,dimension",
+    [
+        ("PERIOD_MISMATCH", "period"),
+        ("SCOPE_MISMATCH", "scope"),
+        ("GRAIN_MISMATCH", "grain"),
+        ("CALIBER_MISMATCH", "unit_caliber"),
+    ],
+)
+def test_four_root_causes_map_to_unqualified(code, dimension):
+    case = result_from_llm_evaluation(_cx005(), _llm_artifact(code, dimension))
+    assert case.status is CaseStatus.FAIL
+    assert case.primary_failure == code
+    assert case.error_types == [code]
+
+
+def test_target_measure_tolerance_is_kept_in_contract():
+    spec = _cx005().measures["产销差率目标差距"]
+    assert spec.aggregation == "actual_minus_target"
+    assert isinstance(spec.tolerance, Tolerance)

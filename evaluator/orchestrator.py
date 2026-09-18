@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""同一 RunContext 下并发执行智能体、SQL、抽取、比较、评分。"""
+"""同一 RunContext 下并发执行智能体、SQL，并调用 LLM 评估单题结论。"""
 from __future__ import annotations
 
 import threading
@@ -7,14 +7,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Sequence
 
-from evaluator.comparator import compare_claims
 from evaluator.answer_context import align_answer, params_for_period
-from evaluator.extractor import claims_from_expected, claims_from_sql_rows, expected_table, extract_claims
+from evaluator.llm_evidence import DEFAULT_MAX_INPUT_CHARS, build_evaluation_evidence
+from evaluator.llm_evaluation import unevaluable_artifact, validate_numeric_differences
+from evaluator.mock_demo import expected_table
 from evaluator.models import (
     AgentAnswer,
     CaseContract,
     CaseResult,
-    CaseStatus,
+    LlmEvaluationArtifact,
     RunContext,
     RunStatus,
     RunSummary,
@@ -22,7 +23,7 @@ from evaluator.models import (
 )
 from evaluator.repository import Repository
 from evaluator.run_context import params_for_resolver, template_params, ym_shift
-from evaluator.scorer import score_case, score_run
+from evaluator.scorer import result_from_llm_evaluation, score_case, score_run
 from evaluator.sql_executor import SqlExecutor
 from evaluator.watermark import capture_watermark, tables_in_sql, watermark_changed
 
@@ -45,15 +46,33 @@ def _agent_raw(answer: Optional[AgentAnswer]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _measure_columns(spec) -> List[str]:
+    return [column for column in [spec.sql_column, *spec.aliases] if column]
+
+
+def _missing_required_measures(contract: CaseContract, snapshot: SqlSnapshot) -> set:
+    required = {key: spec for key, spec in contract.measures.items() if spec.required}
+    if not required:
+        return set()
+    missing = set()
+    for key, spec in required.items():
+        found = False
+        for row in snapshot.rows or []:
+            for column in [key, *_measure_columns(spec)]:
+                if column in row and row[column] not in (None, ""):
+                    found = True
+                    break
+            if found:
+                break
+        if not found:
+            missing.add(key)
+    return missing
+
+
 def _empty_sql(contract: CaseContract, snapshot: SqlSnapshot) -> bool:
     if snapshot.error or not snapshot.rows:
         return True
-    claims = claims_from_sql_rows(contract, snapshot.rows)
-    required = {metric for metric, spec in contract.measures.items() if spec.required}
-    if not required:
-        return False
-    returned = {claim.metric for claim in claims if claim.value is not None}
-    return not required.issubset(returned)
+    return bool(_missing_required_measures(contract, snapshot))
 
 
 def _fallback_sql(executor, contract, run_context, params, snapshot, alignment):
@@ -87,6 +106,7 @@ class Orchestrator:
         golden_cases: Optional[Dict[str, Dict]] = None,
         agent_client: Any = None,
         sql_executor: Optional[SqlExecutor] = None,
+        llm_evaluator: Any = None,
         *,
         concurrency: int = 3,
         mode: str = "live",
@@ -99,6 +119,7 @@ class Orchestrator:
         self.golden_cases = golden_cases or {}
         self.agent_client = agent_client
         self.sql_executor = sql_executor
+        self.llm_evaluator = llm_evaluator
         self.concurrency = max(1, concurrency)
         self.mode = mode
         self.enable_watermark = enable_watermark
@@ -160,7 +181,7 @@ class Orchestrator:
                         prog["current_index"] = turn
                         prog["current_question"] = contract.question
                     if self.session_blocked:
-                        result = score_case(contract, [], not_scored_reason="NOT_SENT_SESSION_BLOCKED")
+                        result = score_case(contract, not_scored_reason="NOT_SENT_SESSION_BLOCKED")
                         result.turn_index = turn
                         self.repo.save_case(run_context.run_id, result)
                     else:
@@ -251,25 +272,67 @@ class Orchestrator:
             return list(self.contracts)
         return [c for c in self.contracts if c.numeric_evaluable]
 
+    def _evaluate_with_llm(
+        self,
+        run_context: RunContext,
+        contract: CaseContract,
+        extract_text: str,
+        sql_snapshot: Optional[SqlSnapshot],
+        alignment: Dict[str, Any],
+    ):
+        max_chars = int(getattr(self.llm_evaluator, "max_input_chars", DEFAULT_MAX_INPUT_CHARS) or DEFAULT_MAX_INPUT_CHARS)
+        evidence = build_evaluation_evidence(
+            contract,
+            answer_text=extract_text,
+            sql_snapshot=sql_snapshot,
+            alignment=alignment,
+            max_input_chars=max_chars,
+        )
+        model = str(getattr(self.llm_evaluator, "model", "") or "")
+        prompt_version = str(getattr(self.llm_evaluator, "prompt_version", "v1") or "v1")
+        reusable = self.repo.find_reusable_llm_evaluation(
+            run_context.run_id,
+            contract.case_id,
+            input_hash=evidence.input_hash,
+            model=model,
+            prompt_version=prompt_version,
+        )
+        if reusable:
+            return LlmEvaluationArtifact.model_validate(reusable), True
+        if self.llm_evaluator is None:
+            return unevaluable_artifact(
+                "LLM_CALL_FAILED",
+                "评估 LLM 未配置，本题无法自动评估",
+                input_hash=evidence.input_hash,
+            ), False
+        try:
+            artifact = self.llm_evaluator.evaluate(evidence, contract)
+        except Exception as exc:  # 单题 LLM 失败不能中断整批
+            return unevaluable_artifact(
+                "LLM_CALL_FAILED",
+                f"评估 LLM 调用异常：{type(exc).__name__}",
+                input_hash=evidence.input_hash,
+                error=type(exc).__name__,
+            ), False
+        return validate_numeric_differences(contract, artifact), False
+
     def _run_one(self, run_context: RunContext, contract: CaseContract, turn: int = 0) -> CaseResult:
         logs: Dict[str, Any] = {"retries": 0, "exceptions": []}
         if not contract.numeric_evaluable:
-            result = score_case(contract, [], not_scored_reason="NON_NUMERIC")
+            result = score_case(contract, not_scored_reason="NON_NUMERIC")
             result.turn_index = turn
             self.repo.save_case(run_context.run_id, result, logs=logs)
             return result
         if not contract.realtime_ready:
-            result = score_case(contract, [], not_scored_reason="SQL_NOT_REALTIME_READY")
+            result = score_case(contract, not_scored_reason="SQL_NOT_REALTIME_READY")
             result.turn_index = turn
             self.repo.save_case(run_context.run_id, result, logs=logs)
             return result
 
         sql_snapshot: Optional[SqlSnapshot] = None
         agent_answer: Optional[AgentAnswer] = None
-        agent_claims, sql_claims = [], []
-        alignment = {}
+        alignment: Dict[str, Any] = {}
         watermark_flag = False
-        result = None
         extract_text = ""
         try:
             params = template_params(
@@ -299,7 +362,6 @@ class Orchestrator:
                     alignment["executed_params"] = params
             if self.mode.startswith("mock"):
                 golden = self.golden_cases.get(contract.case_id) or {}
-                sql_claims = claims_from_expected(contract, golden)
                 columns, rows = expected_table(golden)
                 sql_snapshot = SqlSnapshot(
                     sql_template=contract.sql_template,
@@ -317,7 +379,6 @@ class Orchestrator:
                     sql_snapshot, params = _fallback_sql(
                         self.sql_executor, contract, run_context, params, sql_snapshot, alignment
                     )
-                sql_claims = claims_from_sql_rows(contract, sql_snapshot.rows)
             else:
                 sql_snapshot = SqlSnapshot(sql_template=contract.sql_template, params=params,
                                            error="database connection is not configured")
@@ -331,17 +392,17 @@ class Orchestrator:
                     sql_snapshot.watermark_changed = watermark_flag
         except Exception as exc:
             logs["exceptions"].append(type(exc).__name__)
-            result = score_case(contract, [], not_scored_reason="SQL_FAIL")
+            result = score_case(contract, not_scored_reason="SQL_FAIL")
             return self._save_result(run_context, result, agent_answer, sql_snapshot, logs, alignment, turn)
         if agent_answer and (agent_answer.error or agent_answer.completion_status != "completed"):
-            result = score_case(contract, [], not_scored_reason="AGENT_FAIL")
+            result = score_case(contract, not_scored_reason="AGENT_FAIL")
             return self._save_result(run_context, result, agent_answer, sql_snapshot, logs, alignment, turn)
         if sql_snapshot and sql_snapshot.error:
-            result = score_case(contract, [], not_scored_reason="SQL_FAIL")
+            result = score_case(contract, not_scored_reason="SQL_FAIL")
             logs["sql_error"] = sql_snapshot.error
             return self._save_result(run_context, result, agent_answer, sql_snapshot, logs, alignment, turn)
         if watermark_flag:
-            result = score_case(contract, [], not_scored_reason="WATERMARK_CHANGED")
+            result = score_case(contract, not_scored_reason="WATERMARK_CHANGED")
             return self._save_result(run_context, result, agent_answer, sql_snapshot, logs, alignment, turn)
 
         if alignment.get("period_source") == "database_fallback":
@@ -350,32 +411,14 @@ class Orchestrator:
             alignment["fallback_reason"] = alignment.get("fallback_reason") or "requested_period_no_data"
             alignment["effective_period"] = alignment.get("effective_period") or alignment.get("sql_period")
 
-        agent_claims = extract_claims(contract, extract_text)
-        items = compare_claims(contract, sql_claims, agent_claims)
-        result = score_case(contract, items, extract_failed=not agent_claims and bool(contract.measures))
-        if self.mode == "live":
-            absent = set(contract.measures) - {c.metric for c in sql_claims}
-            if absent or (sql_snapshot and sql_snapshot.truncated):
-                alignment.setdefault("issues", []).append("SQL_BENCHMARK_INCOMPLETE")
-                alignment["status"] = "REVIEW"
-            duplicates = {}
-            for claim in agent_claims + sql_claims:
-                key = (claim.source, tuple(sorted(claim.coordinates.items())), claim.metric)
-                if key in duplicates:
-                    alignment.setdefault("issues", []).append("DUPLICATE_COORDINATES")
-                    alignment["status"] = "REVIEW"
-                duplicates[key] = claim.value
-            if alignment.get("status") == "REVIEW":
-                alignment["conditional_numeric_status"] = result.status.value
-                result.status = CaseStatus.REVIEW
-                result.not_scored_reason = "CONTEXT_REVIEW"
-                result.primary_failure = "CONTEXT_REVIEW"
-                result.error_types = list(dict.fromkeys(result.error_types + alignment.get("issues", [])))
-        return self._save_result(run_context, result, agent_answer, sql_snapshot, logs, alignment, turn,
-                                 agent_claims, sql_claims)
+        # 唯一自动结论来源：LLM 结构化评估。失败保存 UNEVALUABLE，不回退旧规则。
+        artifact, reused = self._evaluate_with_llm(run_context, contract, extract_text, sql_snapshot, alignment)
+        if not reused:
+            self.repo.save_llm_evaluation(run_context.run_id, contract.case_id, artifact)
+        result = result_from_llm_evaluation(contract, artifact)
+        return self._save_result(run_context, result, agent_answer, sql_snapshot, logs, alignment, turn)
 
-    def _save_result(self, run_context, result, agent_answer, sql_snapshot, logs, alignment, turn,
-                     agent_claims=(), sql_claims=()):
+    def _save_result(self, run_context, result, agent_answer, sql_snapshot, logs, alignment, turn):
         result.agent_latency_ms = agent_answer.latency_ms if agent_answer else 0
         result.sql_latency_ms = sql_snapshot.latency_ms if sql_snapshot else 0
         result.retries = agent_answer.retries if agent_answer else 0
@@ -389,9 +432,6 @@ class Orchestrator:
             agent_text=agent_answer.text if agent_answer else "",
             agent_raw=_agent_raw(agent_answer),
             sql_payload=sql_snapshot.model_dump(mode="json") if sql_snapshot else None,
-            # 空提取也要落盘：[] 与"未提取"有区别，事后诊断需知道当时确实没映射上
-            agent_claims=[c.model_dump(mode="json") for c in agent_claims],
-            sql_claims=[c.model_dump(mode="json") for c in sql_claims],
             logs=logs,
         )
         return result

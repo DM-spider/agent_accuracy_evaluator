@@ -34,14 +34,12 @@ def test_detail_requires_row_key():
     assert any("row_key" in e for e in errors)
 
 
-def test_resolve_v3_path(monkeypatch):
-    monkeypatch.setenv("EVAL_CONTRACT_VERSION", "v3")
-    assert resolve_contracts_path().name == "contracts_v3.json"
+def test_resolve_version_from_settings(monkeypatch):
     monkeypatch.setenv("EVAL_CONTRACT_VERSION", "v1")
-    assert resolve_contracts_path().name == "contracts.json"
-
-
-def test_resolve_default_is_v3(monkeypatch):
-    monkeypatch.delenv("EVAL_CONTRACT_VERSION", raising=False)
-    assert resolve_contracts_path({"app": {}}).name == "contracts_v3.json"
+    assert resolve_contracts_path({"app": {"contract_version": "v3"}}).name == "contracts_v3.json"
     assert resolve_contracts_path({"app": {"contract_version": "v1"}}).name == "contracts.json"
+    assert resolve_contracts_path({"app": {"contract_version": "v3"}}, version="v1").name == "contracts.json"
+
+
+def test_resolve_default_is_v3():
+    assert resolve_contracts_path({"app": {}}).name == "contracts_v3.json"

@@ -5,8 +5,13 @@ timezone = "Asia/Shanghai"
 contract_version = "v3"
 open_browser = true
 
+[paths]
+# 留空则使用本工具 data/golden 与 runtime/，不引用工具目录外的数据。
+# 所有运行配置只从 settings.toml 读取，不支持环境变量覆盖。
+golden_dir = ""
+runtime_dir = ""
+
 [database]
-env_file = ""
 # 只读账号。密码填写在本机 settings.toml 中，该文件不会提交到 Git。
 host = "127.0.0.1"
 port = 5432
@@ -18,14 +23,14 @@ max_rows = 5000
 connect_timeout = 15
 
 [agent]
-# 智能体问答 HTTP 接口。密钥放环境变量 EVAL_AGENT_TOKEN。
+# 普通 HTTP 智能体接口。token 只从本文件读取。
 url = ""
+token = ""
 method = "POST"
 timeout_seconds = 90
 retries = 2
 retry_backoff_seconds = 1.5
 concurrency = 3
-token_env = "EVAL_AGENT_TOKEN"
 header_name = "Authorization"
 header_template = "Bearer {token}"
 answer_path = "answer"
@@ -42,16 +47,23 @@ request_template = """
 enabled = true
 timestamp_columns = ["updated_at", "sjsj", "etl_time", "load_time", "modify_time"]
 
-[extractor]
-enable_llm = false
+[evaluator_llm]
+# OpenAI-compatible 评估模型。api_key 只从本文件读取。
+enabled = true
+base_url = "https://api.deepseek.com"
+model = "deepseek-flash"
+api_key = ""
+timeout_seconds = 90
+retries = 2
+temperature = 0
+max_output_tokens = 8000
+max_input_chars = 500000
+min_confidence = 0.70
+prompt_version = "v1"
 
-[paths]
-# 留空则使用本工具 data/golden 与 runtime/，不引用工具目录外的数据
-golden_dir = ""
-runtime_dir = ""
 [platform]
-# Paste the full browser "Copy as cURL (bash)" between the triple single quotes.
-# This is the only source for platform session identifiers and login credentials.
+# 将浏览器 Copy as cURL (bash) 的完整内容粘贴到下面三单引号之间。
+# 会话和登录信息只从此处解析，修改后重启服务。此文件含登录凭证，请勿分享。
 curl = '''
 '''
 enabled = true

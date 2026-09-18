@@ -14,12 +14,21 @@ from evaluator.agent_client import FixtureAgentClient, client_from_settings
 from evaluator.contract_loader import CONTRACTS_PATH, load_contracts, resolve_contracts_path
 from evaluator.exporter import export_html, export_json, export_xlsx
 from evaluator.golden_loader import load_agent_answers, merge_golden, merge_v1_golden
-from evaluator.mock_demo import MIXED_ANSWERS_FILE, MIXED_CASE_IDS, demo_pack, load_script_answers, script_path
+from evaluator.llm_client import LlmEvaluator
+from evaluator.mock_demo import (
+    MIXED_ANSWERS_FILE,
+    MIXED_CASE_IDS,
+    FixtureLlmEvaluator,
+    demo_pack,
+    load_script_answers,
+    mixed_outcomes,
+    script_path,
+)
 from evaluator.orchestrator import Orchestrator
-from evaluator.paths import GOLDEN_DIR, ensure_runtime, runs_dir
+from evaluator.paths import configure_paths, ensure_runtime, golden_dir, runs_dir
 from evaluator.repository import Repository
 from evaluator.run_context import build_run_context
-from evaluator.settings import agent_token, db_password, load_settings, platform_login_session
+from evaluator.settings import db_password, load_settings, platform_login_session
 from evaluator.sql_executor import SqlExecutor, make_pg_connector
 from evaluator.session_guard import SessionGuard
 from evaluator.models import RunSummary, RunStatus
@@ -54,8 +63,9 @@ def _contracts_by_id(st: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
 
 def bootstrap(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    ensure_runtime()
     settings = settings or load_settings()
+    configure_paths(settings)
+    ensure_runtime()
     repo = Repository()
     contracts = load_contracts(resolve_contracts_path(settings))
     # data/ 不入 git（单独私发）：缺黄金集时降级启动（健康检查显示 golden: missing，
@@ -104,7 +114,7 @@ def health() -> Dict[str, Any]:
     st = state()
     settings = st["settings"]
     repo: Repository = st["repo"]
-    golden_ok = (GOLDEN_DIR / "golden_dataset.json").exists()
+    golden_ok = (golden_dir() / "golden_dataset.json").exists()
     storage_ok = repo.db_path.parent.exists()
     db_cfg = settings.get("database") or {}
     db_status = "skipped"
@@ -117,12 +127,20 @@ def health() -> Dict[str, Any]:
             db_status = f"error: {type(exc).__name__}"
     agent_cfg = settings.get("agent") or {}
     agent_status = "stream_configured" if (settings.get("platform") or {}).get("enabled") else "configured" if agent_cfg.get("url") else "not_configured"
+    llm_cfg = settings.get("evaluator_llm") or {}
+    if not llm_cfg.get("enabled", False):
+        llm_status = "disabled"
+    elif all(str(llm_cfg.get(key) or "").strip() for key in ("base_url", "model", "api_key")):
+        llm_status = "configured"
+    else:
+        llm_status = "not_configured"
     return {
         "status": "ok",
         "golden": "ok" if golden_ok else "missing",
         "storage": "ok" if storage_ok else "missing",
         "database": db_status,
         "agent": agent_status,
+        "evaluator_llm": llm_status,
         "contracts": len(st["contracts"]),
     }
 
@@ -203,9 +221,16 @@ def create_run(body: CreateRunBody) -> Dict[str, Any]:
     if is_mock:
         run_contracts = st.get("contracts_v1") or st["contracts"]
         contract_version = "v1"
+        if mode == "mock_mixed":
+            llm_evaluator = FixtureLlmEvaluator(mixed_outcomes(), default_verdict="QUALIFIED")
+        elif mode == "mock_errors":
+            llm_evaluator = FixtureLlmEvaluator({}, default_verdict="UNQUALIFIED", default_issue_code="WRONG_VALUE")
+        else:
+            llm_evaluator = FixtureLlmEvaluator({}, default_verdict="QUALIFIED")
     else:
         run_contracts = st["contracts"]
         contract_version = (settings.get("app") or {}).get("contract_version") or "v3"
+        llm_evaluator = LlmEvaluator(settings.get("evaluator_llm") or {})
     ctx = build_run_context(
         body.anchor_time or (datetime.now(timezone.utc) if mode == "live" else "2026-08-17T10:00:00+08:00"),
         timezone_name=(settings.get("app") or {}).get("timezone") or "Asia/Shanghai",
@@ -218,7 +243,7 @@ def create_run(body: CreateRunBody) -> Dict[str, Any]:
     if mode == "mock_mixed" and not case_ids:
         case_ids = list(MIXED_CASE_IDS)
     if mode == "live":
-        client = client_from_settings(settings, agent_token(settings))
+        client = client_from_settings(settings)
         password = db_password(settings)
         if not password or not (settings.get("database") or {}).get("user"):
             _error("database_not_configured", "实时测评需要配置数据库账号与密码，不会使用历史黄金结果代替")
@@ -277,6 +302,7 @@ def create_run(body: CreateRunBody) -> Dict[str, Any]:
         golden_cases=st["golden_map"],
         agent_client=client,
         sql_executor=executor,
+        llm_evaluator=llm_evaluator,
         concurrency=int((settings.get("agent") or {}).get("concurrency") or 3),
         mode=mode,
         enable_watermark=mode == "live" and bool((settings.get("watermark") or {}).get("enabled", True)),
@@ -425,6 +451,31 @@ def list_cases(
     return {"cases": out}
 
 
+def _caliber_alignment(contract) -> Dict[str, Any]:
+    """数据口径对齐页签的展示数据：只陈述契约单位与归一规则，不包含比较结果。"""
+    from evaluator.normalizer import tolerance_rule, value_scale_rule
+
+    rows = []
+    for dim in contract.row_key or []:
+        rows.append({
+            "kind": "dimension",
+            "object": dim,
+            "canonical_unit": "标准文本",
+            "normalization_rule": "组织别名归一后精确匹配",
+            "rule": "组织别名归一后精确匹配",
+        })
+    for key, spec in contract.measures.items():
+        rule = f"{value_scale_rule(spec)}；{tolerance_rule(spec)}"
+        rows.append({
+            "kind": "measure",
+            "object": spec.label or key,
+            "canonical_unit": spec.unit or "原数值",
+            "normalization_rule": rule,
+            "rule": rule,
+        })
+    return {"rules": [], "rows": rows}
+
+
 @router.get("/api/runs/{run_id}/cases/{case_id}")
 def get_case(run_id: str, case_id: str) -> Dict[str, Any]:
     detail = state()["repo"].load_case_detail(run_id, case_id)
@@ -444,14 +495,11 @@ def get_case(run_id: str, case_id: str) -> Dict[str, Any]:
             contract = CaseContract.model_validate(saved)
     if contract:
         detail["contract"] = contract.model_dump(mode="json")
-        from evaluator.table_comparison import table_comparison
-        detail["table_comparison"] = table_comparison(contract, detail)
+        detail["caliber_alignment"] = _caliber_alignment(contract)
     from evaluator.verdict import case_judgment
-    items = (detail.get("table_comparison") or {}).get("items") or []
     detail["judgment"] = case_judgment(
-        items,
+        detail.get("llm_evaluation"),
         manual_verdict=detail.get("manual_verdict") or (detail.get("review") or {}).get("verdict"),
-        contract=contract,
     )
     return detail
 

@@ -214,7 +214,9 @@ class FixtureAgentClient:
         )
 
 
-def client_from_settings(settings: Dict[str, Any], token: str = "") -> AgentClient:
+def client_from_settings(settings: Dict[str, Any]) -> AgentClient:
+    from evaluator.settings import agent_token
+
     agent = settings.get("agent") or {}
     platform = settings.get("platform") or {}
     if platform.get("enabled"):
@@ -230,6 +232,7 @@ def client_from_settings(settings: Dict[str, Any], token: str = "") -> AgentClie
             trust_env=bool(platform.get("trust_env", False)),
         )
     headers = {}
+    token = agent_token(settings)
     if token:
         template = agent.get("header_template") or "Bearer {token}"
         headers[agent.get("header_name") or "Authorization"] = template.replace("{token}", token)

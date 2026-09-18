@@ -1,11 +1,14 @@
-"""Derived run metrics for generation, accuracy, and assessability."""
+"""Derived run metrics from the single LLM evaluation result.
+
+不再导入旧规则比较；题目结论与七维诊断均来自持久化的 llm_evaluation.json。
+"""
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
-from evaluator.models import CaseContract
-from evaluator.table_comparison import table_comparison
+from evaluator.models import REQUIRED_DIMENSIONS, CaseContract
 from evaluator.verdict import (
     PARTIAL,
     QUALIFIED,
@@ -13,8 +16,19 @@ from evaluator.verdict import (
     UNQUALIFIED,
     agent_produced_result,
     case_judgment,
+    dimension_counts,
     headline_from_metrics,
 )
+
+DIMENSION_METRIC_LABELS = {
+    "period": "期间一致率",
+    "scope": "范围一致率",
+    "grain": "粒度一致率",
+    "field_coverage": "字段完整率",
+    "row_coverage": "行覆盖一致率",
+    "numeric_accuracy": "数值准确率",
+    "unit_caliber": "单位口径一致率",
+}
 
 
 def _ratio(numerator, denominator):
@@ -34,7 +48,7 @@ def _case_detail(repo, run_id, case):
     case_dir = Path(repo.runs_dir) / run_id / "cases" / case["case_id"]
     recheck_dir = case_dir / "sql_rechecks"
     detail["sql_rechecks"] = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(recheck_dir.glob("*.json"))]
-    for name in ("result.json", "agent_answer.json", "sql_snapshot.json", "agent_claims.json", "sql_claims.json"):
+    for name in ("result.json", "agent_answer.json", "sql_snapshot.json", "llm_evaluation.json"):
         path = case_dir / name
         if path.exists():
             detail[name.removesuffix(".json")] = json.loads(path.read_text(encoding="utf-8"))
@@ -42,11 +56,7 @@ def _case_detail(repo, run_id, case):
 
 
 def _planned_question_count(repo, run_id):
-    """计划测评题数：开跑时一次性写入的 contracts_snapshot，不随完成数增长。
-
-    list_cases 只包含已落库（已完成）的题；live 模式下已完成题必有返回文本，
-    若用它的数量当分母，通过率的分子会恒等于分母、全程显示 100%。
-    """
+    """计划测评题数：开跑时一次性写入的 contracts_snapshot，不随完成数增长。"""
     path = Path(repo.runs_dir) / run_id / "contracts_snapshot.json"
     if not path.exists():
         return None
@@ -65,22 +75,33 @@ def run_evaluation_metrics(repo, run_id, contracts):
 
     for case in cases:
         detail = _case_detail(repo, run_id, case)
-        contract = contract_map.get(case["case_id"])
         produced = agent_produced_result(case, detail)
         generated += int(produced)
-        items = []
-        if contract and contract.numeric_evaluable:
-            items = table_comparison(contract, detail).get("items") or []
         manual = case.get("manual_verdict") or (detail.get("review") or {}).get("verdict")
-        judgment = case_judgment(items, manual_verdict=manual, contract=contract)
+        judgment = case_judgment(detail.get("llm_evaluation"), manual_verdict=manual)
         judgment["generated"] = produced
+        judgment["scene_big"] = (contract_map.get(case["case_id"]).scene_big if contract_map.get(case["case_id"]) else "") or case.get("scene_big") or ""
         case_judgments[case["case_id"]] = judgment
         verdict_counts[judgment["final_verdict"]] = verdict_counts.get(judgment["final_verdict"], 0) + 1
         evaluable += int(judgment["evaluable"])
         qualified += int(judgment["qualified"])
 
+    dimensions = dimension_counts(case_judgments.values())
+    for key, bucket in dimensions.items():
+        bucket["label"] = DIMENSION_METRIC_LABELS.get(key, key)
+
+    primary_distribution = Counter()
+    issue_distribution = Counter()
+    for judgment in case_judgments.values():
+        codes = list(dict.fromkeys(judgment.get("issue_codes") or []))
+        for code in codes:
+            issue_distribution[code] += 1
+        if judgment["final_verdict"] in {PARTIAL, UNQUALIFIED}:
+            code = judgment.get("primary_issue_code")
+            if code:
+                primary_distribution[code] += 1
+
     total = len(cases)
-    # 分母取开跑即固定的计划题数；快照缺失（旧数据）时回退已完成题数
     planned = _planned_question_count(repo, run_id)
     denominator = planned if planned else total
     metrics = {
@@ -108,6 +129,9 @@ def run_evaluation_metrics(repo, run_id, contracts):
             "rate": _ratio(evaluable, total),
             "unevaluable_questions": verdict_counts[UNEVALUABLE],
         },
+        "dimension_metrics": dimensions,
+        "primary_issue_distribution": dict(primary_distribution),
+        "issue_distribution": dict(issue_distribution),
         "case_judgments": case_judgments,
     }
     metrics["category_pass_rate"] = _category_pass_rate(cases, case_judgments)

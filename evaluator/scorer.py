@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""单题与批次评分。准确率与覆盖率分开。"""
+"""单题与批次评分。
+
+正常数值题的唯一自动结论来自 LLM 评估；本模块只负责：
+1. 执行失败题（SQL_FAIL / AGENT_FAIL / WATERMARK_CHANGED / NON_NUMERIC）的构造；
+2. 把 LlmEvaluationArtifact 映射成 CaseResult；
+3. 批次级运行摘要。
+"""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -10,23 +16,28 @@ from evaluator.models import (
     CaseMetrics,
     CaseResult,
     CaseStatus,
-    ClaimStatus,
-    ComparisonItem,
     ErrorType,
-    RunSummary,
+    EvaluationVerdict,
+    LlmEvaluationArtifact,
     RunStatus,
+    RunSummary,
     SceneStats,
 )
-from evaluator.verdict import (
-    PARTIAL,
-    QUALIFIED,
-    UNEVALUABLE,
-    UNQUALIFIED,
-    classify_comparison,
-)
 
+VERDICT_TO_STATUS = {
+    EvaluationVerdict.QUALIFIED: CaseStatus.PASS,
+    EvaluationVerdict.PARTIAL: CaseStatus.PARTIAL,
+    EvaluationVerdict.UNQUALIFIED: CaseStatus.FAIL,
+    EvaluationVerdict.UNEVALUABLE: CaseStatus.REVIEW,
+}
 
-MATCH_STATUSES = {ClaimStatus.MATCH, ClaimStatus.MATCH_WITH_TOLERANCE}
+NOT_SCORED_ERROR_TYPES = {
+    "SQL_FAIL": ErrorType.SQL_FAIL.value,
+    "AGENT_FAIL": ErrorType.AGENT_FAIL.value,
+    "SQL_NOT_REALTIME_READY": ErrorType.SQL_NOT_REALTIME_READY.value,
+    "WATERMARK_CHANGED": ErrorType.WATERMARK_CHANGED.value,
+    "NON_NUMERIC": ErrorType.NON_NUMERIC.value,
+}
 
 
 def _ratio(num: int, den: int) -> Optional[float]:
@@ -37,13 +48,10 @@ def _ratio(num: int, den: int) -> Optional[float]:
 
 def score_case(
     contract: CaseContract,
-    items: List[ComparisonItem],
     *,
     not_scored_reason: Optional[str] = None,
-    agent_error: Optional[str] = None,
-    extract_failed: bool = False,
 ) -> CaseResult:
-    error_types: List[str] = []
+    """构造非数值题与执行失败题的结果；正常数值题不再走本函数。"""
     if not contract.numeric_evaluable:
         return CaseResult(
             case_id=contract.case_id,
@@ -55,92 +63,30 @@ def score_case(
             not_scored_reason=not_scored_reason or "NON_NUMERIC",
             error_types=[ErrorType.NON_NUMERIC.value],
         )
-    if not_scored_reason:
-        mapped = {
-            "SQL_FAIL": ErrorType.SQL_FAIL.value,
-            "AGENT_FAIL": ErrorType.AGENT_FAIL.value,
-            "SQL_NOT_REALTIME_READY": ErrorType.SQL_NOT_REALTIME_READY.value,
-            "WATERMARK_CHANGED": ErrorType.WATERMARK_CHANGED.value,
-            "NON_NUMERIC": ErrorType.NON_NUMERIC.value,
-        }
-        return CaseResult(
-            case_id=contract.case_id,
-            question=contract.question,
-            scene_big=contract.scene_big,
-            result_type=contract.result_type,
-            numeric_evaluable=True,
-            status=CaseStatus.NOT_SCORED,
-            not_scored_reason=not_scored_reason,
-            primary_failure=not_scored_reason,
-            error_types=[mapped.get(not_scored_reason, not_scored_reason)],
-        )
-
-    match_n = sum(1 for i in items if i.status in MATCH_STATUSES)
-    wrong_n = sum(1 for i in items if i.status is ClaimStatus.WRONG_VALUE)
-    missing_n = sum(1 for i in items if i.status is ClaimStatus.MISSING)
-    unexpected_n = sum(1 for i in items if i.status is ClaimStatus.UNEXPECTED)
-    unparseable_n = sum(1 for i in items if i.status is ClaimStatus.UNPARSEABLE)
-    required = [i for i in items if i.status is not ClaimStatus.UNEXPECTED and i.status is not ClaimStatus.UNPARSEABLE]
-    returned_required = [i for i in required if i.status is not ClaimStatus.MISSING]
-    sql_keys = {(tuple(sorted(i.coordinates.items())), i.metric) for i in required}
-    agent_keys = {
-        (tuple(sorted(i.coordinates.items())), i.metric)
-        for i in items
-        if i.status is not ClaimStatus.MISSING
-    }
-    sql_rows = {tuple(sorted(i.coordinates.items())) for i in required}
-    agent_rows = {tuple(sorted(i.coordinates.items())) for i in items if i.status is not ClaimStatus.MISSING}
-
-    accuracy_den = match_n + wrong_n
-    coverage_den = len(required)
-    row_den = len(sql_rows)
-    metrics = CaseMetrics(
-        match_count=match_n,
-        wrong_count=wrong_n,
-        missing_count=missing_n,
-        unexpected_count=unexpected_n,
-        unparseable_count=unparseable_n,
-        accuracy=_ratio(match_n, accuracy_den),
-        coverage=_ratio(len(returned_required), coverage_den),
-        row_coverage=_ratio(len(sql_rows & agent_rows), row_den) if row_den else None,
-        required_claims=coverage_den,
-        returned_required=len(returned_required),
-        auto_resolved=unparseable_n == 0 and not extract_failed,
+    reason = not_scored_reason or "EXECUTION_FAILED"
+    return CaseResult(
+        case_id=contract.case_id,
+        question=contract.question,
+        scene_big=contract.scene_big,
+        result_type=contract.result_type,
+        numeric_evaluable=True,
+        status=CaseStatus.NOT_SCORED,
+        not_scored_reason=reason,
+        primary_failure=reason,
+        error_types=[NOT_SCORED_ERROR_TYPES.get(reason, reason)],
     )
 
-    classified = classify_comparison(items, contract)
-    if wrong_n:
-        error_types.append(ErrorType.WRONG_VALUE.value)
-    if any(i.status is ClaimStatus.CALIBER_MISMATCH for i in items):
-        error_types.append(ErrorType.CALIBER_MISMATCH.value)
-    if classified["reason"] == "GRAIN_MISMATCH":
-        error_types.append(ErrorType.GRAIN_MISMATCH.value)
-    elif missing_n:
-        error_types.append(ErrorType.MISSING.value)
-    if unparseable_n:
-        error_types.append(ErrorType.EXTRACT_FAIL.value)
-    if extract_failed and not items:
-        error_types.append(ErrorType.EXTRACT_FAIL.value)
 
-    primary = None
-    if extract_failed and not items:
-        status = CaseStatus.REVIEW
-        primary = "EXTRACT_FAIL"
-    elif classified["verdict"] == UNEVALUABLE:
-        status = CaseStatus.REVIEW
-        primary = classified["reason"] or "EXTRACT_FAIL"
-    elif classified["verdict"] == UNQUALIFIED:
-        status = CaseStatus.FAIL
-        primary = classified["reason"] or "WRONG_VALUE"
-    elif classified["verdict"] == PARTIAL:
-        status = CaseStatus.PARTIAL
-        primary = "MISSING"
-    elif classified["verdict"] == QUALIFIED:
-        status = CaseStatus.PASS
+def result_from_llm_evaluation(contract: CaseContract, artifact: LlmEvaluationArtifact) -> CaseResult:
+    """CaseResult.status 完全由 LLM overall_verdict 映射，不叠加规则结论。"""
+    evaluation = artifact.evaluation
+    status = VERDICT_TO_STATUS[evaluation.overall_verdict]
+    if evaluation.overall_verdict == EvaluationVerdict.QUALIFIED:
+        accuracy: Optional[float] = 1.0
+    elif evaluation.overall_verdict in {EvaluationVerdict.PARTIAL, EvaluationVerdict.UNQUALIFIED}:
+        accuracy = 0.0
     else:
-        status = CaseStatus.REVIEW
-        primary = classified["reason"] or "EXTRACT_FAIL"
-
+        accuracy = None
     return CaseResult(
         case_id=contract.case_id,
         question=contract.question,
@@ -148,10 +94,12 @@ def score_case(
         result_type=contract.result_type,
         numeric_evaluable=True,
         status=status,
-        primary_failure=primary,
-        error_types=error_types,
-        metrics=metrics,
-        comparison_items=items,
+        primary_failure=evaluation.primary_issue_code,
+        error_types=list(dict.fromkeys(evaluation.issue_codes)),
+        metrics=CaseMetrics(
+            accuracy=accuracy,
+            auto_resolved=status is not CaseStatus.REVIEW,
+        ),
     )
 
 
@@ -175,25 +123,7 @@ def score_run(
         by_status[result.status.value] += 1
         for err in result.error_types:
             by_error[err] += 1
-
-    match_n = sum(r.metrics.match_count for r in scored)
-    wrong_n = sum(r.metrics.wrong_count for r in scored)
-    unexpected_n = sum(r.metrics.unexpected_count for r in scored)
-    returned = sum(r.metrics.returned_required for r in scored)
-    required = sum(r.metrics.required_claims for r in scored)
-    row_num = 0
-    row_den = 0
-    for result in scored:
-        if result.metrics.row_coverage is None or result.metrics.required_claims == 0:
-            continue
-        # 用覆盖分子还原：row_coverage * sql_rows ≈ 已返回行
-        sql_rows = {tuple(sorted(i.coordinates.items())) for i in result.comparison_items if i.status is not ClaimStatus.UNEXPECTED}
-        agent_rows = {tuple(sorted(i.coordinates.items())) for i in result.comparison_items if i.status is not ClaimStatus.MISSING}
-        row_den += len(sql_rows)
-        row_num += len(sql_rows & agent_rows)
-
-    auto = sum(1 for r in scored if r.numeric_evaluable and r.metrics.auto_resolved)
-    numeric_n = sum(1 for r in results if r.numeric_evaluable)
+    pass_n = sum(1 for r in scored if r.status is CaseStatus.PASS)
 
     scene_bucket: Dict[str, List[CaseResult]] = defaultdict(list)
     for result in results:
@@ -202,19 +132,16 @@ def score_run(
     for scene, group in sorted(scene_bucket.items()):
         scene_scored = [r for r in group if r.status not in {CaseStatus.NOT_SCORED, CaseStatus.REVIEW}]
         passed = sum(1 for r in scene_scored if r.status is CaseStatus.PASS)
-        m = sum(r.metrics.match_count for r in scene_scored)
-        d = m + sum(r.metrics.wrong_count + r.metrics.unexpected_count for r in scene_scored)
         by_scene.append(
             SceneStats(
                 scene=scene,
                 scored=len(scene_scored),
                 passed=passed,
                 pass_rate=_ratio(passed, len(scene_scored)),
-                accuracy=_ratio(m, d),
+                accuracy=None,
             )
         )
 
-    pass_n = sum(1 for r in scored if r.status is CaseStatus.PASS)
     return RunSummary(
         run_id=run_id,
         status=status,
@@ -229,11 +156,11 @@ def score_run(
         fail_cases=sum(1 for r in scored if r.status is CaseStatus.FAIL),
         review_cases=sum(1 for r in results if r.status is CaseStatus.REVIEW),
         case_pass_rate=_ratio(pass_n, len(scored)),
-        numeric_accuracy=_ratio(match_n, match_n + wrong_n + unexpected_n),
-        numeric_coverage=_ratio(returned, required),
-        row_coverage=_ratio(row_num, row_den),
-        unexpected_rate=_ratio(unexpected_n, match_n + wrong_n + unexpected_n + sum(r.metrics.missing_count for r in scored)),
-        auto_parse_rate=_ratio(auto, numeric_n),
+        numeric_accuracy=None,
+        numeric_coverage=None,
+        row_coverage=None,
+        unexpected_rate=None,
+        auto_parse_rate=None,
         watermark_stable=watermark_stable,
         by_scene=by_scene,
         by_status=dict(by_status),

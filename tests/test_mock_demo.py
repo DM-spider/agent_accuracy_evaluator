@@ -45,14 +45,16 @@ def test_mock_script_is_markdown_with_request_and_response():
     assert "### 智能体返回" in parsed["CX01"]["block"]
 
 
-def test_api_mock_mixed_defaults_to_twenty_and_detects_errors(tmp_path, monkeypatch):
-    monkeypatch.setenv("EVAL_RUNTIME_DIR", str(tmp_path))
+def test_api_mock_mixed_defaults_to_twenty_and_detects_errors(tmp_path):
     import evaluator.api as api_mod
-    api_mod._STATE.clear()
-    from evaluator.app import app
-    from evaluator.api import bootstrap
+    from evaluator.settings import load_settings
 
-    bootstrap()
+    api_mod._STATE.clear()
+    settings = load_settings()
+    settings["paths"] = {"runtime_dir": str(tmp_path), "golden_dir": ""}
+    from evaluator.app import app
+
+    api_mod.bootstrap(settings)
     client = TestClient(app)
     pack = client.get("/api/mock-demo")
     assert pack.status_code == 200

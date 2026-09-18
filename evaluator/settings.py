@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
+"""配置加载。生产配置与凭证只从 settings.toml 读取，不接受环境变量覆盖。"""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -24,6 +24,10 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 
 
 def load_settings(path: Path | None = None) -> Dict[str, Any]:
+    """先读示例配置作为默认值，再用显式路径或本机 settings.toml 覆盖。
+
+    只接受显式文件路径依赖注入；不支持环境变量覆盖生产配置。
+    """
     example = CONFIG_DIR / "settings.example.toml"
     settings: Dict[str, Any] = {}
     if example.exists():
@@ -31,9 +35,6 @@ def load_settings(path: Path | None = None) -> Dict[str, Any]:
     candidates = []
     if path:
         candidates.append(Path(path))
-    env_path = os.environ.get("EVAL_SETTINGS")
-    if env_path:
-        candidates.append(Path(env_path))
     candidates.extend(
         [
             TOOL_ROOT / "config" / "settings.toml",
@@ -54,17 +55,6 @@ def load_settings(path: Path | None = None) -> Dict[str, Any]:
     if curl.strip():
         from evaluator.curl_config import parse_platform_curl
         platform.update(parse_platform_curl(curl))
-    env_file = (settings.get("database") or {}).get("env_file")
-    if env_file:
-        from dotenv import dotenv_values
-        source = Path(env_file)
-        if not source.is_absolute():
-            source = TOOL_ROOT / source
-        values = dotenv_values(source, encoding="utf-8-sig", interpolate=False)
-        db = settings.setdefault("database", {})
-        for key, env_key in {"host": "PGHOST", "port": "PGPORT", "name": "PGDATABASE", "user": "PGUSER", "password": "PGPASSWORD"}.items():
-            if values.get(env_key):
-                db[key] = values[env_key]
     return settings
 
 
@@ -73,8 +63,17 @@ def db_password(settings: Dict[str, Any]) -> str:
 
 
 def agent_token(settings: Dict[str, Any]) -> str:
-    env_name = settings.get("agent", {}).get("token_env", "EVAL_AGENT_TOKEN")
-    return os.environ.get(env_name, "")
+    """业务智能体 token 只读取 settings.agent.token。"""
+    return settings.get("agent", {}).get("token", "")
+
+
+def evaluator_llm_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    return settings.get("evaluator_llm") or {}
+
+
+def evaluator_llm_api_key(settings: Dict[str, Any]) -> str:
+    """评估 LLM 密钥只读取 settings.evaluator_llm.api_key。"""
+    return evaluator_llm_settings(settings).get("api_key", "")
 
 
 def platform_login_session(settings: Dict[str, Any]) -> str:

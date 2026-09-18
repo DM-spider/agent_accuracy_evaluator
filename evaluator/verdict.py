@@ -1,15 +1,9 @@
-"""Question-level consistency, auto judgment, and manual override."""
+"""Question-level judgment from the single LLM evaluation, plus manual override."""
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-MATCH = {"MATCH", "MATCH_WITH_TOLERANCE", "VALUE_MATCH_REVIEW"}
-WRONG = {"WRONG_VALUE", "VALUE_DIFF_REVIEW"}
-MISSING = {"MISSING", "FIELD_UNRECOGNIZED"}
-COMMENTARY = {"UNEXPECTED", "NO_BENCHMARK"}
-UNPARSEABLE = {"UNPARSEABLE", "VALUE_UNPARSEABLE"}
-CALIBER = {"CALIBER_MISMATCH", "CALIBER_REVIEW"}
-GAP = MISSING | COMMENTARY
+from evaluator.models import DimensionStatus, REQUIRED_DIMENSIONS
 
 QUALIFIED = "QUALIFIED"
 PARTIAL = "PARTIAL"
@@ -18,13 +12,24 @@ UNEVALUABLE = "UNEVALUABLE"
 SCORED_VERDICTS = {QUALIFIED, PARTIAL, UNQUALIFIED}
 OVERRIDE_VERDICTS = {QUALIFIED, PARTIAL, UNQUALIFIED, UNEVALUABLE}
 DEFAULT_THRESHOLD = 1.0
-REASON_LABELS = {
-    "WRONG_VALUE": "存在错值",
-    "MISSING": "同一粒度下漏行或漏列",
-    "GRAIN_MISMATCH": "SQL 为明细，回答只给出汇总，粒度不一致",
-    "EXTRACT_FAIL": "抽不出可与 SQL 对齐的数值",
-    "CALIBER_MISMATCH": "期间、组织或聚合口径不一致",
+
+ISSUE_LABELS = {
+    "PERIOD_MISMATCH": "期间不一致",
+    "SCOPE_MISMATCH": "范围不一致",
+    "GRAIN_MISMATCH": "粒度不一致",
+    "MISSING_FIELD": "漏指标",
+    "MISSING_ROW": "漏行",
+    "WRONG_VALUE": "错值",
+    "UNIT_MISMATCH": "单位不一致",
+    "CALIBER_MISMATCH": "口径不一致",
+    "CONTRADICTORY_TEXT": "回答自相矛盾",
+    "INSUFFICIENT_EVIDENCE": "证据不足",
+    "LLM_CALL_FAILED": "评估调用失败",
+    "LLM_RESPONSE_INVALID": "评估返回非法",
+    "LLM_INPUT_TOO_LARGE": "证据超出上限",
 }
+NO_EVALUATION_CODE = "NO_LLM_EVALUATION"
+NO_EVALUATION_LABEL = "尚无 LLM 评估"
 
 
 def _ratio(numerator: int, denominator: int) -> Optional[float]:
@@ -53,99 +58,16 @@ def agent_produced_result(case: Dict[str, Any], detail: Optional[Dict[str, Any]]
     return completion == "completed"
 
 
-def item_status(item: Any) -> str:
-    status = item.get("status") if isinstance(item, dict) else getattr(item, "status", "")
-    return str(getattr(status, "value", status) or "")
-
-
-def _item_coords(item: Any) -> tuple:
-    raw = item.get("coordinates") if isinstance(item, dict) else getattr(item, "coordinates", None)
-    raw = raw or {}
-    return tuple(sorted((str(k), str(v)) for k, v in raw.items() if str(v).strip()))
-
-
-def consistency_from_items(items: Any) -> Optional[float]:
-    matched = wrong = missing = 0
-    for item in items or []:
-        status = item_status(item)
-        if status in MATCH:
-            matched += 1
-        elif status in WRONG:
-            wrong += 1
-        elif status in MISSING:
-            missing += 1
-    return _ratio(matched, matched + wrong + missing)
-
-
-def classify_comparison(items: Any, contract: Any = None) -> Dict[str, Any]:
-    matched = wrong = missing = commentary = unparseable = caliber = 0
-    sql_rows = set()
-    for item in items or []:
-        status = item_status(item)
-        coords = _item_coords(item)
-        if status in MATCH:
-            matched += 1
-            if coords:
-                sql_rows.add(coords)
-        elif status in WRONG:
-            wrong += 1
-            if coords:
-                sql_rows.add(coords)
-        elif status in MISSING:
-            missing += 1
-            if coords:
-                sql_rows.add(coords)
-        elif status in CALIBER:
-            caliber += 1
-            if coords:
-                sql_rows.add(coords)
-        elif status in COMMENTARY:
-            commentary += 1
-        elif status in UNPARSEABLE:
-            unparseable += 1
-
-    row_key = list(getattr(contract, "row_key", None) or []) if contract is not None else []
-    result_type = str(getattr(contract, "result_type", "") or "")
-    is_detail = bool(row_key) or result_type == "detail" or len(sql_rows) >= 2
-    grain_mismatch = is_detail and len(sql_rows) >= 2 and matched == 0 and wrong == 0 and commentary > 0 and missing > 0
-    policy = getattr(contract, "coverage_policy", None) if contract is not None else None
-    minimum = float(getattr(policy, "minimum", 1.0) or 1.0)
-    required = matched + missing + caliber
-    coverage = _ratio(matched, required)
-
-    if matched + wrong + missing + caliber == 0:
-        verdict, reason = UNEVALUABLE, "EXTRACT_FAIL"
-    elif grain_mismatch:
-        verdict, reason = UNQUALIFIED, "GRAIN_MISMATCH"
-    elif wrong:
-        verdict, reason = UNQUALIFIED, "WRONG_VALUE"
-    elif caliber and not matched:
-        verdict, reason = UNQUALIFIED, "CALIBER_MISMATCH"
-    elif caliber:
-        verdict, reason = PARTIAL, "CALIBER_MISMATCH"
-    elif matched == 0 and missing > 0:
-        verdict, reason = (UNQUALIFIED, "GRAIN_MISMATCH") if commentary else (UNEVALUABLE, "EXTRACT_FAIL")
-    elif missing and coverage is not None and coverage + 1e-12 >= minimum:
-        verdict, reason = QUALIFIED, None
-    elif missing:
-        verdict, reason = PARTIAL, "MISSING"
-    elif matched:
-        verdict, reason = QUALIFIED, None
-    else:
-        verdict, reason = UNEVALUABLE, "EXTRACT_FAIL"
-
-    return {
-        "verdict": verdict,
-        "reason": reason,
-        "matched": matched,
-        "wrong": wrong,
-        "missing": missing,
-        "commentary": commentary,
-        "unparseable": unparseable,
-        "caliber": caliber,
-        "grain_mismatch": grain_mismatch,
-        "coverage": coverage,
-    }
+def _evaluation_data(evaluation: Any) -> Optional[Dict[str, Any]]:
+    if evaluation is None:
+        return None
+    if isinstance(evaluation, dict):
+        data = evaluation.get("evaluation") if isinstance(evaluation.get("evaluation"), dict) else evaluation
+        return data if isinstance(data, dict) else None
+    if hasattr(evaluation, "model_dump"):
+        dumped = evaluation.model_dump(mode="json")
+        return dumped.get("evaluation") if isinstance(dumped.get("evaluation"), dict) else dumped
+    return None
 
 
 def normalize_manual_verdict(value: Any) -> Optional[str]:
@@ -165,24 +87,94 @@ def normalize_manual_verdict(value: Any) -> Optional[str]:
     return aliases[text]
 
 
-def case_judgment(items: Any, threshold: Any = None, manual_verdict: Any = None, contract: Any = None) -> Dict[str, Any]:
-    classified = classify_comparison(items, contract)
-    auto = classified["verdict"]
+EMPTY_JUDGMENT = {
+    "auto_verdict": UNEVALUABLE,
+    "primary_issue_code": None,
+    "issue_codes": [],
+    "confidence": None,
+    "summary": "",
+    "dimensions": {},
+    "differences_count": 0,
+    "has_evaluation": False,
+    "auto_source": "none",
+}
+
+
+def case_judgment(evaluation: Any, manual_verdict: Any = None) -> Dict[str, Any]:
+    """自动结论直接来自保存的 LLM 评估；人工平反优先。"""
+    data = _evaluation_data(evaluation)
     manual = normalize_manual_verdict(manual_verdict)
+    if not data:
+        auto = UNEVALUABLE
+        issue = None
+        codes: list = []
+        confidence = None
+        summary = ""
+        dimensions: Dict[str, Any] = {}
+        differences_count = 0
+        has_evaluation = False
+    else:
+        auto = str(data.get("overall_verdict") or UNEVALUABLE).upper()
+        if auto not in OVERRIDE_VERDICTS:
+            auto = UNEVALUABLE
+        issue = data.get("primary_issue_code")
+        codes = list(data.get("issue_codes") or [])
+        confidence = data.get("confidence")
+        summary = str(data.get("summary") or "")
+        dimensions = data.get("dimensions") or {}
+        differences_count = len(data.get("differences") or [])
+        has_evaluation = True
     final = manual if manual in OVERRIDE_VERDICTS else auto
+    if not has_evaluation and final == auto:
+        reason = NO_EVALUATION_CODE
+        reason_label = NO_EVALUATION_LABEL
+    else:
+        reason = issue
+        reason_label = ISSUE_LABELS.get(str(issue or ""), "")
     return {
-        "consistency": consistency_from_items(items),
-        "threshold": None,
         "auto_verdict": auto,
         "manual_verdict": manual,
         "final_verdict": final,
         "evaluable": final in SCORED_VERDICTS,
         "qualified": final == QUALIFIED,
-        "reason": classified["reason"],
-        "reason_label": REASON_LABELS.get(classified["reason"] or ""),
-        "grain_mismatch": classified["grain_mismatch"],
-        "coverage": classified["coverage"],
+        "reason": reason,
+        "reason_label": reason_label,
+        "primary_issue_code": issue,
+        "issue_codes": codes,
+        "confidence": confidence,
+        "summary": summary,
+        "dimensions": dimensions,
+        "differences_count": differences_count,
+        "has_evaluation": has_evaluation,
+        "auto_source": "llm" if has_evaluation else "none",
+        "consistency": None,
+        "threshold": None,
+        "grain_mismatch": ((dimensions.get("grain") or {}).get("status") == DimensionStatus.MISMATCH.value),
+        "coverage": None,
     }
+
+
+def dimension_counts(judgments) -> Dict[str, Dict[str, Any]]:
+    """七维一致率：按题计数，UNKNOWN 和 NA 不进入分母。"""
+    metrics: Dict[str, Dict[str, Any]] = {}
+    for key in REQUIRED_DIMENSIONS:
+        metrics[key] = {"matched": 0, "partial": 0, "mismatched": 0, "evaluable": 0, "rate": None}
+    for judgment in judgments:
+        dimensions = judgment.get("dimensions") or {}
+        for key in REQUIRED_DIMENSIONS:
+            status = (dimensions.get(key) or {}).get("status")
+            bucket = metrics[key]
+            if status == DimensionStatus.MATCH.value:
+                bucket["matched"] += 1
+            elif status == DimensionStatus.PARTIAL.value:
+                bucket["partial"] += 1
+            elif status == DimensionStatus.MISMATCH.value:
+                bucket["mismatched"] += 1
+    for bucket in metrics.values():
+        evaluable = bucket["matched"] + bucket["partial"] + bucket["mismatched"]
+        bucket["evaluable"] = evaluable
+        bucket["rate"] = _ratio(bucket["matched"], evaluable)
+    return metrics
 
 
 def headline_from_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:

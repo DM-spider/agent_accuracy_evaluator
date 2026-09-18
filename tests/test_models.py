@@ -5,13 +5,14 @@ import pytest
 
 from evaluator.models import (
     CaseContract,
+    CaseMetrics,
     CaseResult,
     CaseStatus,
-    ClaimStatus,
-    ComparisonItem,
     CoveragePolicy,
+    DimensionEvaluation,
+    LlmEvaluationArtifact,
+    LlmEvaluationResult,
     MeasureSpec,
-    NumericClaim,
     RunContext,
     RunSummary,
     Tolerance,
@@ -88,37 +89,29 @@ def test_case_contract_accepts_stat_measures():
     assert not contract.review_required
 
 
-def test_numeric_claim_and_comparison_item():
-    claim = NumericClaim(
-        case_id="CX04",
-        source="agent",
-        coordinates={"period": "202607", "organization": "南山分公司"},
-        metric="actual_rate",
-        raw_value="11.84%",
-        value=11.84,
-        unit="%",
-        evidence="南山分公司实际产销差率为11.84%",
-        extractor="markdown_table",
-    )
-    item = ComparisonItem(
-        coordinates=claim.coordinates,
-        metric=claim.metric,
-        expected_value=11.84,
-        actual_value=11.40,
-        delta=-0.44,
-        tolerance=0.01,
-        status=ClaimStatus.WRONG_VALUE,
-        evidence_claim_id="claim_123",
-        evidence=claim.evidence,
-    )
-    assert claim.source == "agent"
-    assert item.status is ClaimStatus.WRONG_VALUE
-
-
 def test_case_result_and_run_summary_defaults():
-    result = CaseResult(case_id="CX01", status=CaseStatus.PASS)
+    result = CaseResult(case_id="CX01", status=CaseStatus.PASS, metrics=CaseMetrics(accuracy=1.0))
     summary = RunSummary(run_id="r1", total_cases=73, scored_cases=55, not_scored_cases=18)
     assert result.status is CaseStatus.PASS
+    assert result.metrics.accuracy == 1.0
     assert summary.not_scored_cases == 18
-    with pytest.raises(Exception):
-        NumericClaim(case_id="X", source="llm", metric="rate")
+
+
+def test_llm_evaluation_result_roundtrip():
+    from evaluator.llm_evaluation import artifact_from_evaluation
+    from evaluator.models import REQUIRED_DIMENSIONS
+
+    result = LlmEvaluationResult(
+        overall_verdict="UNEVALUABLE",
+        confidence=0.2,
+        summary="证据不足",
+        primary_issue_code="INSUFFICIENT_EVIDENCE",
+        issue_codes=["INSUFFICIENT_EVIDENCE"],
+        dimensions={key: DimensionEvaluation(status="UNKNOWN") for key in REQUIRED_DIMENSIONS},
+        differences=[],
+        needs_human_review=True,
+    )
+    artifact = artifact_from_evaluation(result, model="m", input_hash="h")
+    assert isinstance(artifact, LlmEvaluationArtifact)
+    assert artifact.evaluation.needs_human_review is True
+    assert artifact.created_at

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from openpyxl import load_workbook
 
-from evaluator.paths import GOLDEN_DIR
+from evaluator.paths import golden_dir as configured_golden_dir
 
 EXCEL_NAME = "漏损问答黄金测评集.xlsx"
 JSON_NAME = "golden_dataset.json"
@@ -44,7 +44,7 @@ EXCEL_COLUMNS = {
 def default_golden_dir(override: Optional[str | Path] = None) -> Path:
     if override:
         return Path(override)
-    return GOLDEN_DIR
+    return configured_golden_dir()
 
 
 def load_golden_json(golden_dir: Optional[Path] = None, *, name: str = JSON_NAME) -> Dict[str, Any]:

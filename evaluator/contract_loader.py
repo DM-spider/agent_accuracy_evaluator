@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -22,8 +21,8 @@ class ContractError(ValueError):
 
 
 def resolve_contracts_path(settings: Optional[dict] = None, version: Optional[str] = None) -> Path:
-    """v1 → contracts.json；v3 → contracts_v3.json。EVAL_CONTRACT_VERSION 优先。"""
-    ver = version or os.environ.get("EVAL_CONTRACT_VERSION")
+    """v1 → contracts.json；v3 → contracts_v3.json。只读显式版本或 settings.app.contract_version。"""
+    ver = version
     if not ver:
         if settings is None:
             from evaluator.settings import load_settings

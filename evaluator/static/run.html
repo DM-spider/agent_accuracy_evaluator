@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>测评概览</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260910">
+  <link rel="stylesheet" href="/static/styles.css?v=20260918">
 </head>
 <body>
   <header class="topbar">
@@ -22,6 +22,11 @@
     <h1 id="run-title">评估指标</h1>
     <div class="grid metrics" id="metric-cards"></div>
     <div class="status-strip" id="status-summary"></div>
+    <div class="card" id="diagnostics-card">
+      <h2>问题定位</h2>
+      <div class="dimension-strip" id="dimension-metrics"></div>
+      <p class="kicker" id="primary-issues"></p>
+    </div>
     <div class="card">
       <h2>题目结果</h2>
       <div class="filters">

@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from evaluator.models import CaseResult, RunSummary
+from evaluator.models import CaseResult, LlmEvaluationArtifact, RunSummary
 from evaluator.paths import db_path as default_db_path, ensure_runtime, runs_dir as default_runs_dir
 
 SCHEMA = """
@@ -59,25 +59,6 @@ CREATE TABLE IF NOT EXISTS sql_snapshots (
     watermark_changed INTEGER,
     PRIMARY KEY (run_id, case_id)
 );
-CREATE TABLE IF NOT EXISTS numeric_claims (
-    run_id TEXT,
-    case_id TEXT,
-    claim_id TEXT,
-    source TEXT,
-    metric TEXT,
-    value REAL,
-    payload_json TEXT,
-    PRIMARY KEY (run_id, case_id, claim_id)
-);
-CREATE TABLE IF NOT EXISTS comparison_items (
-    run_id TEXT,
-    case_id TEXT,
-    item_index INTEGER,
-    metric TEXT,
-    status TEXT,
-    payload_json TEXT,
-    PRIMARY KEY (run_id, case_id, item_index)
-);
 CREATE TABLE IF NOT EXISTS review_notes (
     run_id TEXT,
     case_id TEXT,
@@ -85,6 +66,19 @@ CREATE TABLE IF NOT EXISTS review_notes (
     note TEXT,
     updated_at TEXT,
     verdict TEXT,
+    PRIMARY KEY (run_id, case_id)
+);
+CREATE TABLE IF NOT EXISTS llm_evaluations (
+    run_id TEXT,
+    case_id TEXT,
+    input_hash TEXT,
+    verdict TEXT,
+    primary_issue_code TEXT,
+    confidence REAL,
+    model TEXT,
+    prompt_version TEXT,
+    result_path TEXT,
+    created_at TEXT,
     PRIMARY KEY (run_id, case_id)
 );
 """
@@ -187,8 +181,6 @@ class Repository:
         agent_text: str = "",
         agent_raw: Any = None,
         sql_payload: Any = None,
-        agent_claims: Any = None,
-        sql_claims: Any = None,
         logs: Any = None,
     ) -> None:
         case_dir = self.run_dir(run_id) / "cases" / result.case_id
@@ -202,10 +194,6 @@ class Repository:
         if sql_payload is not None:
             (case_dir / "sql_snapshot.json").write_text(json.dumps(sql_payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
             result_path = str(case_dir / "sql_snapshot.json")
-        if agent_claims is not None:
-            (case_dir / "agent_claims.json").write_text(json.dumps(agent_claims, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-        if sql_claims is not None:
-            (case_dir / "sql_claims.json").write_text(json.dumps(sql_claims, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         if logs is not None:
             (case_dir / "logs.json").write_text(json.dumps(logs, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         (case_dir / "result.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
@@ -248,13 +236,69 @@ class Repository:
                     1 if result.not_scored_reason == "WATERMARK_CHANGED" else 0,
                 ),
             )
-            conn.execute("DELETE FROM comparison_items WHERE run_id=? AND case_id=?", (run_id, result.case_id))
-            for idx, item in enumerate(result.comparison_items):
-                conn.execute(
-                    """INSERT INTO comparison_items (run_id, case_id, item_index, metric, status, payload_json)
-                    VALUES (?, ?, ?, ?, ?, ?)""",
-                    (run_id, result.case_id, idx, item.metric, item.status.value, item.model_dump_json()),
-                )
+
+    def save_llm_evaluation(self, run_id: str, case_id: str, artifact: LlmEvaluationArtifact) -> str:
+        """写入唯一权威的 llm_evaluation.json；覆盖前归档旧版本。"""
+        case_dir = self.run_dir(run_id) / "cases" / case_id
+        case_dir.mkdir(parents=True, exist_ok=True)
+        path = case_dir / "llm_evaluation.json"
+        if path.exists():
+            try:
+                previous = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                previous = {}
+            evaluation_id = f"{case_id}-{previous.get('input_hash') or 'legacy'}-{previous.get('created_at') or _now()}"
+            evaluation_id = evaluation_id.replace(":", "").replace(" ", "_").replace("/", "_").replace("+", "_")[:120]
+            history_dir = self.run_dir(run_id) / "llm_evaluations"
+            history_dir.mkdir(parents=True, exist_ok=True)
+            (history_dir / f"{evaluation_id}.json").write_text(
+                json.dumps(previous, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+            )
+        payload = artifact.model_dump(mode="json")
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO llm_evaluations
+                (run_id, case_id, input_hash, verdict, primary_issue_code, confidence, model,
+                 prompt_version, result_path, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    case_id,
+                    artifact.input_hash,
+                    artifact.evaluation.overall_verdict.value,
+                    artifact.evaluation.primary_issue_code,
+                    artifact.evaluation.confidence,
+                    artifact.model,
+                    artifact.prompt_version,
+                    str(path),
+                    artifact.created_at,
+                ),
+            )
+        return str(path)
+
+    def load_llm_evaluation(self, run_id: str, case_id: str, *, include_raw: bool = False) -> Optional[Dict[str, Any]]:
+        path = self.run_dir(run_id) / "cases" / case_id / "llm_evaluation.json"
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not include_raw:
+            payload.pop("raw_response", None)
+        return payload
+
+    def find_reusable_llm_evaluation(
+        self, run_id: str, case_id: str, *, input_hash: str, model: str, prompt_version: str
+    ) -> Optional[Dict[str, Any]]:
+        current = self.load_llm_evaluation(run_id, case_id)
+        if not current:
+            return None
+        if (
+            current.get("input_hash") == input_hash
+            and current.get("model") == model
+            and current.get("prompt_version") == prompt_version
+        ):
+            return current
+        return None
 
     def list_cases(self, run_id: str) -> List[Dict[str, Any]]:
         with self._connect() as conn:
@@ -295,11 +339,14 @@ class Repository:
         case_dir = self.run_dir(run_id) / "cases" / case_id
         detail = dict(cases[case_id])
         detail["sql_rechecks"] = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((case_dir / "sql_rechecks").glob("*.json"))]
-        for name in ("result.json", "agent_answer.json", "sql_snapshot.json", "agent_claims.json", "sql_claims.json", "logs.json"):
+        for name in ("result.json", "agent_answer.json", "sql_snapshot.json", "llm_evaluation.json", "logs.json"):
             path = case_dir / name
             key = name.replace(".json", "")
             if path.exists():
-                detail[key] = json.loads(path.read_text(encoding="utf-8"))
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if name == "llm_evaluation.json" and isinstance(payload, dict):
+                    payload.pop("raw_response", None)
+                detail[key] = payload
         with self._connect() as conn:
             note = conn.execute(
                 "SELECT * FROM review_notes WHERE run_id=? AND case_id=?",
