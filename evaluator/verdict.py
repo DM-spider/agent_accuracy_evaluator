@@ -87,19 +87,6 @@ def normalize_manual_verdict(value: Any) -> Optional[str]:
     return aliases[text]
 
 
-EMPTY_JUDGMENT = {
-    "auto_verdict": UNEVALUABLE,
-    "primary_issue_code": None,
-    "issue_codes": [],
-    "confidence": None,
-    "summary": "",
-    "dimensions": {},
-    "differences_count": 0,
-    "has_evaluation": False,
-    "auto_source": "none",
-}
-
-
 def case_judgment(evaluation: Any, manual_verdict: Any = None) -> Dict[str, Any]:
     """自动结论直接来自保存的 LLM 评估；人工平反优先。"""
     data = _evaluation_data(evaluation)

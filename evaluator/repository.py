@@ -40,25 +40,6 @@ CREATE TABLE IF NOT EXISTS case_runs (
     reviewed INTEGER DEFAULT 0,
     PRIMARY KEY (run_id, case_id)
 );
-CREATE TABLE IF NOT EXISTS agent_answers (
-    run_id TEXT,
-    case_id TEXT,
-    text_path TEXT,
-    latency_ms INTEGER,
-    model TEXT,
-    error TEXT,
-    PRIMARY KEY (run_id, case_id)
-);
-CREATE TABLE IF NOT EXISTS sql_snapshots (
-    run_id TEXT,
-    case_id TEXT,
-    result_path TEXT,
-    latency_ms INTEGER,
-    row_count INTEGER,
-    error TEXT,
-    watermark_changed INTEGER,
-    PRIMARY KEY (run_id, case_id)
-);
 CREATE TABLE IF NOT EXISTS review_notes (
     run_id TEXT,
     case_id TEXT,
@@ -185,15 +166,11 @@ class Repository:
     ) -> None:
         case_dir = self.run_dir(run_id) / "cases" / result.case_id
         case_dir.mkdir(parents=True, exist_ok=True)
-        text_path = ""
         if agent_text or agent_raw is not None:
             payload = {"text": agent_text, "raw": agent_raw}
             (case_dir / "agent_answer.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-            text_path = str(case_dir / "agent_answer.json")
-        result_path = ""
         if sql_payload is not None:
             (case_dir / "sql_snapshot.json").write_text(json.dumps(sql_payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-            result_path = str(case_dir / "sql_snapshot.json")
         if logs is not None:
             (case_dir / "logs.json").write_text(json.dumps(logs, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         (case_dir / "result.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
@@ -216,24 +193,6 @@ class Repository:
                     result.sql_latency_ms,
                     result.retries,
                     1 if result.reviewed else 0,
-                ),
-            )
-            conn.execute(
-                """INSERT OR REPLACE INTO agent_answers (run_id, case_id, text_path, latency_ms, model, error)
-                VALUES (?, ?, ?, ?, ?, ?)""",
-                (run_id, result.case_id, text_path, result.agent_latency_ms, "", result.not_scored_reason if result.not_scored_reason == "AGENT_FAIL" else None),
-            )
-            conn.execute(
-                """INSERT OR REPLACE INTO sql_snapshots (run_id, case_id, result_path, latency_ms, row_count, error, watermark_changed)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    run_id,
-                    result.case_id,
-                    result_path,
-                    result.sql_latency_ms,
-                    0,
-                    result.not_scored_reason if result.not_scored_reason in {"SQL_FAIL", "WATERMARK_CHANGED"} else None,
-                    1 if result.not_scored_reason == "WATERMARK_CHANGED" else 0,
                 ),
             )
 

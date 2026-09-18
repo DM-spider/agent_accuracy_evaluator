@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import json
 import time
 
 from fastapi.testclient import TestClient

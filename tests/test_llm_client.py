@@ -2,7 +2,6 @@
 import json
 
 import httpx
-import pytest
 
 from evaluator.llm_client import LlmEvaluator
 from evaluator.llm_evidence import build_evaluation_evidence

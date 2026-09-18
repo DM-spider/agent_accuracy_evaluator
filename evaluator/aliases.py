@@ -33,33 +33,6 @@ def metric_aliases() -> Dict[str, str]:
     return out
 
 
-@lru_cache(maxsize=1)
-def organization_hierarchy() -> Dict[str, object]:
-    """组织上下级关系，仅用于"疑似上下级合并"诊断（comparison_policy: independent）。
-
-    比较本身不做上下级汇总合并：上级与下级仍按独立行计分。
-    缺失或非法配置时返回空映射，诊断自动跳过。
-    """
-    path = CONFIG_DIR / "organization_hierarchy.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    parents = data.get("parents") if isinstance(data, dict) else None
-    if not isinstance(parents, dict):
-        return {}
-    return {"comparison_policy": data.get("comparison_policy", "independent"), "parents": parents}
-
-
-def normalize_org(value: str) -> str:
-    text = str(value or "").replace("**", "").replace("`", "").strip()
-    text = re.sub(r"^[^\w\u4e00-\u9fff]+|[^\w\u4e00-\u9fff]+$", "", text).strip()
-    return organization_aliases().get(_norm(text), text)
-
-
-ORG_DIMS = {"organization", "组织", "单位", "分公司", "部门", "二级部门", "水司", "org", "zone"}
-PERIOD_DIMS = {"period", "月份", "月份(期数)", "期间", "ym", "业务月", "统计月", "年月"}
-DATE_DIMS = {"date", "日期"}
 DEFAULT_DIM_ALIASES = {
     "组织": ["组织", "单位", "分公司", "部门", "二级部门", "水司", "organization", "org"],
     "organization": ["organization", "组织", "单位", "分公司", "部门", "二级部门"],
@@ -73,18 +46,6 @@ DEFAULT_DIM_ALIASES = {
     "管径分段": ["管径分段", "管径", "分段"],
     "管道编码": ["管道编码", "管道"],
 }
-
-
-def is_org_dim(dim: str) -> bool:
-    return str(dim or "") in ORG_DIMS
-
-
-def is_period_dim(dim: str) -> bool:
-    return str(dim or "") in PERIOD_DIMS
-
-
-def is_date_dim(dim: str) -> bool:
-    return str(dim or "") in DATE_DIMS
 
 
 def dimension_aliases(dim: str) -> List[str]:

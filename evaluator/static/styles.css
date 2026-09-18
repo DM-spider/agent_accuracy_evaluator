@@ -39,31 +39,6 @@ button { cursor: pointer; }
 .brand { font-family: var(--font); font-size: 22px; letter-spacing: 0.04em; }
 .brand small { display: block; font-family: var(--font); font-size: 12px; color: var(--muted); letter-spacing: 0.18em; text-transform: uppercase; }
 .nav { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.threshold-badge {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 7px 12px; background: #e7f4f2; border: 1px solid var(--teal); color: var(--teal-ink);
-}
-.threshold-badge-kicker {
-  padding: 2px 6px; background: var(--teal); color: #f7f3e8;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
-}
-.threshold-badge-title { font-size: 13px; font-weight: 700; }
-.threshold-badge-value { display: inline-flex; align-items: baseline; gap: 2px; color: var(--teal); }
-.threshold-badge-value input {
-  width: 58px; border: 0; border-bottom: 2px solid var(--teal); background: #fff;
-  color: var(--teal); font-family: var(--font); font-size: 22px; font-weight: 700;
-  line-height: 1.1; text-align: right; padding: 2px 4px;
-}
-.threshold-badge-value input:focus { outline: 2px solid var(--teal); outline-offset: 1px; }
-.threshold-badge-value em { font-style: normal; font-size: 15px; font-weight: 700; }
-.threshold-badge-hint { font-size: 12px; color: var(--teal); }
-.threshold-panel {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  margin: 14px 0 4px; padding: 12px 14px; background: #e7f4f2; border: 1px solid var(--teal);
-}
-.threshold-panel strong { display: block; color: var(--teal-ink); font-size: 14px; }
-.threshold-panel p { margin: 4px 0 0; color: var(--teal-ink); font-size: 12px; line-height: 1.45; }
-.dialog .threshold-panel { margin-left: 0; margin-right: 0; }
 .case-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
 .verdict-switch { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
 .verdict-btn {
@@ -195,10 +170,10 @@ td.num, th.num { text-align: center; font-family: var(--font); }
   font-weight: 650;
   text-align: center;
 }
-.result-tag.QUALIFIED, .result-tag.PASS { color: var(--stamp-pass); }
+.result-tag.QUALIFIED { color: var(--stamp-pass); }
 .result-tag.PARTIAL { color: var(--stamp-partial); }
-.result-tag.UNQUALIFIED, .result-tag.FAIL { color: var(--stamp-fail); }
-.result-tag.UNEVALUABLE, .result-tag.NOT_SCORED { color: var(--muted); }
+.result-tag.UNQUALIFIED { color: var(--stamp-fail); }
+.result-tag.UNEVALUABLE { color: var(--muted); }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: #f3eee0; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
@@ -213,8 +188,6 @@ tr.clickable:hover { background: #f3eee0; }
 .dialog-backdrop.show { display: flex; }
 .dialog { width: min(560px, 92vw); background: var(--sheet); padding: 22px; border: 1px solid var(--line); box-shadow: var(--shadow); }
 .dialog label { display: block; margin: 10px 0 6px; color: var(--muted); font-size: 12px; }
-.dialog .threshold-badge-value { display: inline-flex; margin: 0; color: var(--teal); font-size: inherit; }
-.dialog .threshold-panel input { width: 64px; padding: 4px 6px; background: #fff; border: 0; border-bottom: 2px solid var(--teal); }
 
 .empty { padding: 32px; text-align: center; color: var(--muted); border: 1px dashed var(--line); background: rgba(255,255,255,0.4); }
 
@@ -254,7 +227,6 @@ tr.clickable:hover { background: #f3eee0; }
 [data-page="case"] td:last-child {
   border-right: 0;
 }
-.comparison-table,
 .caliber-table,
 .md-table,
 #sql-result table,
@@ -262,8 +234,6 @@ tr.clickable:hover { background: #f3eee0; }
   border-collapse: separate;
   border-spacing: 0;
 }
-.comparison-table th,
-.comparison-table td,
 .caliber-table th,
 .caliber-table td,
 .md-table th,
@@ -274,8 +244,6 @@ tr.clickable:hover { background: #f3eee0; }
 .sql-result-table td {
   border-right: 1px solid #dce3e5;
 }
-.comparison-table th:last-child,
-.comparison-table td:last-child,
 .caliber-table th:last-child,
 .caliber-table td:last-child,
 .md-table th:last-child,
@@ -329,8 +297,6 @@ tr.clickable:hover { background: #f3eee0; }
 .pager { display: flex; gap: 8px; align-items: center; }
 
 .wrong { background: #f8e4dc; }
-.missing { background: #f4ead0; }
-.unexpected { background: #efe4f2; }
 .match { background: #e5f2ea; }
 
 * { letter-spacing: 0 !important; }
@@ -369,10 +335,8 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .sql-query-textbox:focus { outline: 2px solid #0e6b63; outline-offset: 2px; }
 .recheck-record { padding: 12px 0; border-bottom: 1px solid #dce3e5; }
 .recheck-record summary { cursor: pointer; }
-.comparison-note { font-size: 13px; color: #536263; }
 #case-question { margin: 14px 0 18px; font-size: 21px; font-weight: 650; line-height: 1.55; color: #172226; }
 .review-row { background: #f2f5f6; }
-.unavailable-row { background: #eef0f1; color: #59636a; }
 .request-response { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
 .request-response section { min-width: 0; }
 .payload-code { box-sizing: border-box; width: 100%; height: 360px; min-height: 360px; max-height: 360px; margin: 0; padding: 14px; overflow: auto; border: 1px solid #aebbc0; background: #f4f6f7; line-height: 1.6; }
@@ -380,9 +344,6 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .caliber-table th, .caliber-table td { min-width: 110px; }
 .caliber-table th:nth-child(2), .caliber-table td:nth-child(2) { min-width: 220px; }
 .caliber-table th:nth-child(4), .caliber-table td:nth-child(4) { min-width: 320px; }
-.comparison-table { margin-top: 14px; }
-.comparison-table th, .comparison-table td { min-width: 76px; }
-.comparison-table td:last-child { min-width: 200px; }
 @media (max-width: 800px) {
   .sql-layout, .log-columns, .request-response { grid-template-columns: 1fr; gap: 16px; }
   .log-columns > section { grid-row: auto; grid-template-rows: auto auto auto; }
@@ -392,8 +353,6 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   .topbar { align-items: flex-start; flex-direction: column; }
   .brand { font-size: 20px; }
   .nav { width: 100%; }
-  .threshold-badge, .threshold-panel { width: 100%; }
-  .threshold-panel { flex-direction: column; align-items: flex-start; }
 }
 
 @media (max-width: 900px) {
@@ -404,10 +363,6 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   .pane .body { max-height: 280px; }
   .evidence .pane { height: 510px; min-height: 510px; max-height: 510px; }
 }
-.period-flow{display:flex;align-items:center;gap:0;border:1px solid var(--line);margin:12px 0;background:#fff;overflow:auto}
-.period-flow span{padding:9px 14px;white-space:nowrap;border-right:1px solid var(--line)}
-.period-flow span:last-child{border-right:0}
-.period-flow span:not(:last-child)::after{content:"→";margin-left:14px;color:var(--muted)}
 [data-page="case"] #tab-agent h3,
 [data-page="case"] #tab-sql h3,
 [data-page="case"] #tab-agent .info-rows dt,

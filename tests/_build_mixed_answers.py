@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from evaluator.golden_loader import load_agent_answers
 from evaluator.mock_demo import MIXED_ANSWERS_FILE, MIXED_CASE_IDS, PLANTED_ERRORS, write_mock_script

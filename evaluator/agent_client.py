@@ -74,9 +74,6 @@ class AgentClient:
             "timezone": run_context.timezone,
             "agent_name": run_context.agent_name,
         }
-        rendered = self.request_template
-        for key, value in mapping.items():
-            rendered = rendered.replace("{" + key + "}", json.dumps(value, ensure_ascii=False)[1:-1] if False else str(value))
         # 用 JSON 编码避免换行破坏
         safe = self.request_template
         for key, value in mapping.items():

@@ -337,7 +337,6 @@ def create_run(body: CreateRunBody) -> Dict[str, Any]:
 
 @router.get("/api/platform/status")
 def platform_status():
-    import os
     st = state()
     cfg = st["settings"].get("platform") or {}
     guard = SessionGuard(st["repo"].runs_dir.parent / "session_guards", cfg.get("session_id", ""))

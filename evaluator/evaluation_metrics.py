@@ -8,7 +8,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from evaluator.models import REQUIRED_DIMENSIONS, CaseContract
+from evaluator.models import CaseContract
 from evaluator.verdict import (
     PARTIAL,
     QUALIFIED,
@@ -46,9 +46,7 @@ def _contracts_for_run(repo, run_id, contracts):
 def _case_detail(repo, run_id, case):
     detail = dict(case)
     case_dir = Path(repo.runs_dir) / run_id / "cases" / case["case_id"]
-    recheck_dir = case_dir / "sql_rechecks"
-    detail["sql_rechecks"] = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(recheck_dir.glob("*.json"))]
-    for name in ("result.json", "agent_answer.json", "sql_snapshot.json", "llm_evaluation.json"):
+    for name in ("agent_answer.json", "llm_evaluation.json"):
         path = case_dir / name
         if path.exists():
             detail[name.removesuffix(".json")] = json.loads(path.read_text(encoding="utf-8"))

@@ -83,19 +83,11 @@ class RunStatus(str, Enum):
 
 
 class ErrorType(str, Enum):
-    WRONG_VALUE = "WRONG_VALUE"
-    MISSING = "MISSING"
-    UNEXPECTED = "UNEXPECTED"
-    UNIT_ERROR = "UNIT_ERROR"
-    ROW_KEY_UNMATCHED = "ROW_KEY_UNMATCHED"
-    EXTRACT_FAIL = "EXTRACT_FAIL"
     SQL_FAIL = "SQL_FAIL"
     AGENT_FAIL = "AGENT_FAIL"
     SQL_NOT_REALTIME_READY = "SQL_NOT_REALTIME_READY"
     WATERMARK_CHANGED = "WATERMARK_CHANGED"
     NON_NUMERIC = "NON_NUMERIC"
-    GRAIN_MISMATCH = "GRAIN_MISMATCH"
-    CALIBER_MISMATCH = "CALIBER_MISMATCH"
 
 
 class Tolerance(BaseModel):
@@ -239,16 +231,8 @@ class RunContext(BaseModel):
 class CaseMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    match_count: int = 0
-    wrong_count: int = 0
-    missing_count: int = 0
-    unexpected_count: int = 0
-    unparseable_count: int = 0
+    # 仅保留题目级 LLM 结论需要的字段；历史 JSON 以普通 dict 读取，不受影响。
     accuracy: Optional[float] = None
-    coverage: Optional[float] = None
-    row_coverage: Optional[float] = None
-    required_claims: int = 0
-    returned_required: int = 0
     auto_resolved: bool = True
 
 
@@ -363,7 +347,6 @@ class AgentAnswer(BaseModel):
     case_id: str
     question: str
     text: str = ""
-    raw_response_path: str = ""
     latency_ms: int = 0
     retries: int = 0
     error: Optional[str] = None

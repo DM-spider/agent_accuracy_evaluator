@@ -34,7 +34,7 @@ def test_pp_sign_and_empty_not_zero():
     above, _, _ = parse_number("高于目标4.09个百分点", pp)
     assert abs(below + 4.09) < 1e-9
     assert abs(above - 4.09) < 1e-9
-    empty, _, e2 = parse_number("--", percent if False else MeasureSpec(label="x", unit="%"))
+    empty, _, e2 = parse_number("--", MeasureSpec(label="x", unit="%"))
     assert empty is None
     assert e2 is None
 

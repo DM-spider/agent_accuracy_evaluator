@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from evaluator.aliases import canonical_metric
 from evaluator.models import (

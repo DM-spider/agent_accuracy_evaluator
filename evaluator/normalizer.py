@@ -10,7 +10,6 @@ from evaluator.models import MeasureSpec
 EMPTY_TOKENS = {"", "--", "—", "–", "暂无", "无", "n/a", "na", "null", "none", "-", "nan"}
 # 数据库可能以科学计数法返回极小值（实测出现过 4.72e-05），数字需整体解析
 NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?")
-VALUE_TAIL = r"[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?(?:\s*(?:亿|万))?(?:\s*(?:立方米|立方|方|m³|m3|%|‰|pp|个百分点))?"
 RANK_RE = re.compile(r"^第?\d+名$")
 ID_RE = re.compile(r"^(WS|GD|DMA)?\d{6,}[A-Za-z0-9]*$", re.I)
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$|^\d{8}$|^\d{4}/\d{2}/\d{2}$")
@@ -81,7 +80,7 @@ def parse_number(
         return None, (spec.unit if spec else ""), "unparseable"
     unit = spec.unit if spec else ""
     scale = spec.value_scale if spec else "volume"
-    token, factor = conversion_meta(text, spec)
+    _, factor = conversion_meta(text, spec)
     # 文本自带单位词（%/‰/pp/个百分点）说明值已是业务读数，ratio01 不再放大
     unit_word = bool(re.search(r"[%％‰]", text) or "pp" in text.lower() or "个百分点" in text)
     if factor:

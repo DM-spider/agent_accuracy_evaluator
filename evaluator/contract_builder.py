@@ -11,7 +11,6 @@ from evaluator.run_context import normalize_sql, preview_sql, replace_literal
 
 AS_RE = re.compile(r'\bAS\s+"([^"]+)"|\bAS\s+([A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff%().]*)', re.I)
 TIME_LIT_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2}|20\d{4})\b")
-IN_LIST_RE = re.compile(r"IN\s*\(([^)]+)\)", re.I)
 
 DIM_ALIASES = {
     "organization": ["组织", "二级部门", "bz_bm", "dwmc", "分公司", "单位"],

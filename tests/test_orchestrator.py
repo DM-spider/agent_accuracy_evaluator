@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 import json
-from pathlib import Path
 
 from evaluator.agent_client import FixtureAgentClient
-from evaluator.llm_evaluation import artifact_from_evaluation, unevaluable_artifact, unevaluable_result
+from evaluator.llm_evaluation import artifact_from_evaluation, unevaluable_artifact
 from evaluator.models import (
     REQUIRED_DIMENSIONS,
     CaseContract,

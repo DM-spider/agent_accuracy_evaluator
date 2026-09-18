@@ -5,7 +5,6 @@ from evaluator.models import (
     CaseResult,
     CaseStatus,
     DimensionEvaluation,
-    EvaluationVerdict,
     LlmEvaluationArtifact,
     LlmEvaluationResult,
     RunStatus,
@@ -20,9 +19,9 @@ def test_sqlite_roundtrip(tmp_path):
     repo.create_run(summary)
     repo.save_case(
         "r1",
-        CaseResult(case_id="CX01", status=CaseStatus.PASS, metrics=CaseMetrics(match_count=3)),
+        CaseResult(case_id="CX01", status=CaseStatus.PASS, metrics=CaseMetrics(accuracy=1.0)),
         agent_text="ok",
-        sql_payload={"rows": []},
+        sql_payload={"rows": [{"a": 1}], "row_count": 1},
     )
     found = repo.get_run("r1")
     assert found["run_id"] == "r1"

@@ -6,7 +6,7 @@ import pytest
 from evaluator.agent_client import redact_headers
 from evaluator.answer_context import align_answer, params_for_period
 from evaluator.contract_loader import CONTRACTS_PATH, load_contracts
-from evaluator.models import CaseStatus, RunStatus, SqlSnapshot
+from evaluator.models import RunStatus, SqlSnapshot
 from evaluator.orchestrator import Orchestrator
 from evaluator.repository import Repository
 from evaluator.run_context import build_run_context, to_pg_params, preview_sql

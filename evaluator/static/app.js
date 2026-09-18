@@ -39,17 +39,6 @@ function inlineMarkdown(value) {
   return escapeHtml(value).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 }
 
-const contextIssues = {
-  ORGANIZATION_MISMATCH: "组织口径不一致", ORGANIZATION_UNCONFIRMED: "组织范围待确认",
-  AGGREGATION_MISMATCH: "单月与累计口径不一致", AGGREGATION_UNCONFIRMED: "统计粒度待确认",
-  PERIOD_FALLBACK_REVIEW: "月份回退规则待复核", PERIOD_MISSING: "回答缺少明确年月",
-  PERIOD_AMBIGUOUS: "回答含多个候选期间", PERIOD_RESOLVER_REVIEW: "复杂期间待复核",
-  PERIOD_INFERRED: "回答未明确期间，按问题口径查询", PERIOD_CONFLICT: "回答与工具查询期间冲突",
-  DATABASE_PERIOD_FALLBACK: "原期间无数据，SQL已回退到最近可用月份",
-  DATE_BOUNDARIES_REVIEW: "日期起止边界待确认", FUTURE_PERIOD: "回答期间晚于请求时间",
-  SQL_BENCHMARK_INCOMPLETE: "SQL 基准结果不完整", DUPLICATE_COORDINATES: "指标坐标重复"
-};
-
 const dimensionLabels = {
   period: "期间", scope: "范围", grain: "粒度", field_coverage: "字段",
   row_coverage: "行覆盖", numeric_accuracy: "数值", unit_caliber: "单位口径"
@@ -214,7 +203,7 @@ function renderLlmDiff(evaluation, judgment) {
     <div class="llm-dimensions">${dimensionRows}</div>
     ${differences.length
       ? `<table class="llm-differences"><thead><tr><th>问题类型</th><th>位置 / 字段</th><th>智能体值</th><th>SQL 值</th><th>说明</th></tr></thead><tbody>${differences}</tbody></table>`
-      : '<p class="caliber-note">未记录差异项</p>'}
+      : '<p class="kicker">未记录差异项</p>'}
     <p class="llm-meta">${escapeHtml(meta || "评估元信息未记录")}</p>`;
 }
 

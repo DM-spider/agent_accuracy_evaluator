@@ -41,11 +41,6 @@ def db_path() -> Path:
     return runtime_dir() / "evaluation.db"
 
 
-RUNTIME_DIR = runtime_dir()
-RUNS_DIR = runs_dir()
-DB_PATH = db_path()
-
-
 def ensure_runtime() -> Path:
     root = runtime_dir()
     root.mkdir(parents=True, exist_ok=True)

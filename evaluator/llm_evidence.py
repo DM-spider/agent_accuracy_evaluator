@@ -29,10 +29,6 @@ def stable_json(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def evidence_input_hash(payload: Dict[str, Any]) -> str:
-    return hashlib.sha256(stable_json(payload).encode("utf-8")).hexdigest()
-
-
 def _measure_payload(contract: CaseContract) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for key, spec in contract.measures.items():

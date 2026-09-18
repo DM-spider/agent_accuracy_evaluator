@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>数值准确性测评</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260910">
+  <link rel="stylesheet" href="/static/styles.css?v=20260918">
 </head>
 <body>
   <header class="topbar">
@@ -15,7 +15,7 @@
   </header>
   <main class="page" data-page="index">
     <h1>历史测评批次</h1>
-    <p class="muted">必答格全部对齐且无错值记为合格；漏行漏列记为部分作答；明细被收成汇总记为不合格。可在题目详情中人工平反。</p>
+    <p class="muted">由评估 LLM 按题目契约与 SQL 基准给出总体结论：合格 / 部分作答 / 不合格 / 无法评估；人工平反优先。可在题目详情中查看七维诊断与差异清单。</p>
     <div id="health" class="card" style="margin:16px 0"></div>
     <div id="platform-status" role="status"></div>
     <button class="btn ghost" id="confirm-idle" hidden>确认网页任务已结束，解除暂停</button>
@@ -54,6 +54,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260918"></script>
 </body>
 </html>
