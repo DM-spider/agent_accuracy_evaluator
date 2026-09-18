@@ -172,18 +172,33 @@ def make_pg_connector(settings: Dict[str, Any], password: str) -> Callable[[], A
     db = settings.get("database") or {}
 
     def _connect():
+        import socket
+
         import pg8000.dbapi as pg8000
 
         pg8000.paramstyle = "pyformat"
-
-        return pg8000.connect(
-            host=db.get("host"),
-            port=int(db.get("port") or 80),
-            database=db.get("name"),
-            user=db.get("user"),
-            password=password,
-            ssl_context=False,
-            timeout=int(db.get("connect_timeout") or 15),
+        connect_timeout = int(db.get("connect_timeout") or 15)
+        query_timeout = int(db.get("timeout_seconds") or 30)
+        # pg8000 的 timeout 会作用到整条连接的 socket，不是一个"仅连接超时"参数。
+        # 先用 connect_timeout 建连，再把 socket 超时改成查询预算，
+        # 让服务端 statement_timeout 先触发并返回可读错误，而不是客户端提前断流。
+        sock = socket.create_connection(
+            (str(db.get("host")), int(db.get("port") or 5432)),
+            timeout=connect_timeout,
         )
+        sock.settimeout(query_timeout + 5)
+        try:
+            return pg8000.connect(
+                host=db.get("host"),
+                port=int(db.get("port") or 5432),
+                database=db.get("name"),
+                user=db.get("user"),
+                password=password,
+                ssl_context=False,
+                sock=sock,
+            )
+        except Exception:
+            sock.close()
+            raise
 
     return _connect

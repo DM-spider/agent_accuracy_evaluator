@@ -19,6 +19,8 @@ name = "example_db"
 user = ""
 password = ""
 timeout_seconds = 30
+# ODPS 等外部表单条查询可能有数十秒启动开销，按实际调大 timeout_seconds；
+# connect_timeout 只用于建连，不会提前掐断查询。
 max_rows = 5000
 connect_timeout = 15
 

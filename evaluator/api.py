@@ -520,7 +520,12 @@ def sql_recheck(run_id: str, case_id: str, body: SqlRecheckBody):
         _error("not_found", "case not found", 404)
     if not db_password(st["settings"]):
         _error("database_not_configured", "数据库未配置")
-    executor = SqlExecutor(connect=make_pg_connector(st["settings"], db_password(st["settings"])))
+    db_cfg = st["settings"].get("database") or {}
+    executor = SqlExecutor(
+        connect=make_pg_connector(st["settings"], db_password(st["settings"])),
+        timeout_seconds=int(db_cfg.get("timeout_seconds") or 30),
+        max_rows=int(db_cfg.get("max_rows") or 5000),
+    )
     try:
         return recheck_sql(st["repo"], run_id, case_id, executor, body.params)
     except ValueError as exc:

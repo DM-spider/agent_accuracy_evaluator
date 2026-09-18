@@ -71,6 +71,45 @@ def test_timeout_and_row_limit_return_structured_error():
     assert "timeout" in snap2.error.lower()
 
 
+def test_pg_connector_separates_connect_and_query_timeouts(monkeypatch):
+    import socket as socket_mod
+
+    import pg8000.dbapi as pg8000_dbapi
+
+    calls = {}
+
+    class FakeSock:
+        def settimeout(self, value):
+            calls["query_timeout"] = value
+
+        def close(self):
+            calls["closed"] = True
+
+    def fake_create_connection(address, timeout=None):
+        calls["address"] = address
+        calls["connect_timeout"] = timeout
+        return FakeSock()
+
+    def fake_connect(**kwargs):
+        calls["connect_kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(socket_mod, "create_connection", fake_create_connection)
+    monkeypatch.setattr(pg8000_dbapi, "connect", fake_connect)
+    from evaluator.sql_executor import make_pg_connector
+
+    connector = make_pg_connector(
+        {"database": {"host": "db", "port": 5432, "name": "x", "user": "u", "connect_timeout": 5, "timeout_seconds": 120}},
+        "secret-password",
+    )
+    connector()
+    assert calls["connect_timeout"] == 5
+    assert calls["query_timeout"] == 125
+    assert calls["address"] == ("db", 5432)
+    assert calls["connect_kwargs"]["sock"] is not None
+    assert calls["connect_kwargs"]["password"] == "secret-password"
+
+
 def test_normalize_sql_cell_rounds_and_keeps_period_int():
     assert normalize_sql_cell("rate", Decimal("0.079047223856482756")) == 0.0790
     assert normalize_sql_cell("gap", 4.72238564827449e-05) == 0.0000

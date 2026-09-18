@@ -154,7 +154,7 @@ function formatSqlValue(value) {
 }
 
 function sqlTable(snapshot, resultsOnly = false) {
-  if (snapshot && snapshot.error) return resultsOnly ? "<em>无可用结果</em>" : `<p>SQL 查询失败</p><pre>${escapeHtml(snapshot.error)}</pre>`;
+  if (snapshot && snapshot.error) return resultsOnly ? `<em>SQL 查询失败：${escapeHtml(snapshot.error)}</em>` : `<p>SQL 查询失败</p><pre>${escapeHtml(snapshot.error)}</pre>`;
   const rows = (snapshot && snapshot.rows) || [];
   const cols = (snapshot && snapshot.columns) || (rows[0] ? Object.keys(rows[0]) : []);
   if (!cols.length) return resultsOnly ? "<em>无可用结果</em>" : "<em>未执行 SQL，尚无查询快照</em>";
