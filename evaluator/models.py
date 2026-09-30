@@ -203,35 +203,22 @@ class RunContext(BaseModel):
     current_month_end: str
     previous_month_start: str
     previous_month_end: str
-    last_7_start: str
-    last_7_end: str
-    last_30_start: str
-    last_30_end: str
     year_start: str
     today: str
     yesterday: str
-    week_start: str
-    jan_may_period: str
     yoy_month: str
     last_6_months: List[str] = Field(default_factory=list)
-    last_3_months: List[str] = Field(default_factory=list)
-    last_12_months: List[str] = Field(default_factory=list)
-    quarter_start: str = ""
-    prev_quarter_start: str = ""
-    prev_quarter_end: str = ""
     effective_single_month: str = ""
     effective_year_month: str = ""
     agent_name: str = "water-loss-agent"
-    contract_version: str = "v3"
     consistency_threshold: float = 0.6
     latest_periods: Dict[str, int] = Field(default_factory=dict)
-    bind_params: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CaseMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # 仅保留题目级 LLM 结论需要的字段；历史 JSON 以普通 dict 读取，不受影响。
+    # 仅保留题目级 LLM 结论需要的字段。
     accuracy: Optional[float] = None
     auto_resolved: bool = True
 
@@ -429,7 +416,6 @@ class RunSummary(BaseModel):
     anchor_time: str = ""
     timezone: str = "Asia/Shanghai"
     agent_name: str = ""
-    contract_version: str = "v3"
     total_cases: int = 0
     scored_cases: int = 0
     not_scored_cases: int = 0
@@ -449,6 +435,5 @@ class RunSummary(BaseModel):
     by_error_type: Dict[str, int] = Field(default_factory=dict)
     progress_done: int = 0
     progress_total: int = 0
-    mode: str = "live"
     consistency_threshold: float = 0.6
     timing_summary: Dict[str, Any] = Field(default_factory=dict)

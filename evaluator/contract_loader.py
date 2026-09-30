@@ -7,30 +7,18 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from evaluator.contract_builder import build_all_contracts, dump_contracts
-from evaluator.golden_loader import merge_golden
 from evaluator.models import CaseContract
 from evaluator.paths import CONFIG_DIR
 
 CONTRACTS_PATH = CONFIG_DIR / "contracts.json"
-CONTRACTS_V3_PATH = CONFIG_DIR / "contracts_v3.json"
 
 
 class ContractError(ValueError):
     pass
 
 
-def resolve_contracts_path(settings: Optional[dict] = None, version: Optional[str] = None) -> Path:
-    """v1 → contracts.json；v3 → contracts_v3.json。只读显式版本或 settings.app.contract_version。"""
-    ver = version
-    if not ver:
-        if settings is None:
-            from evaluator.settings import load_settings
-            settings = load_settings()
-        ver = (settings.get("app") or {}).get("contract_version") or "v3"
-    ver = str(ver).strip().lower()
-    if ver == "v3":
-        return CONTRACTS_V3_PATH
+def resolve_contracts_path() -> Path:
+    """唯一标准集契约（config/contracts.json，由 golden_builder.runner 生成）。"""
     return CONTRACTS_PATH
 
 
@@ -59,26 +47,13 @@ def validate_contracts(contracts: List[CaseContract], expected_count: Optional[i
     return errors
 
 
-def generate_contracts(golden_dir: Optional[Path] = None, dest: Optional[Path] = None) -> List[CaseContract]:
-    golden = merge_golden(golden_dir)
-    contracts = build_all_contracts(golden["cases"])
-    dest = dest or CONTRACTS_PATH
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dump_contracts(contracts, dest)
-    return contracts
-
-
 def load_contracts(path: Optional[Path] = None, *, generate_if_missing: bool = True) -> List[CaseContract]:
     target = Path(path) if path else resolve_contracts_path()
     if not target.exists():
-        # v3 契约由 golden v3 runner 生成，禁止用旧 73 题黄金集回填。
-        if target.name == "contracts_v3.json" or not generate_if_missing:
-            raise FileNotFoundError(target)
-        contracts = generate_contracts(dest=target)
-    else:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-        raw = payload.get("contracts") if isinstance(payload, dict) else payload
-        contracts = [CaseContract.model_validate(item) for item in raw]
+        raise FileNotFoundError(target)
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    raw = payload.get("contracts") if isinstance(payload, dict) else payload
+    contracts = [CaseContract.model_validate(item) for item in raw]
     errors = validate_contracts(contracts)
     fatal = [e for e in errors if "缺少 SQL" in e or "重复" in e or "不能为空" in e]
     if fatal:

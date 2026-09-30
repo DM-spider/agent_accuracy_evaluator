@@ -43,7 +43,7 @@ def test_load_settings_uses_explicit_path(tmp_path, monkeypatch):
         tmp_path,
         """
 [app]
-contract_version = "v1"
+host = "127.0.0.1"
 [paths]
 runtime_dir = "runtime-from-file"
 [agent]
@@ -53,15 +53,14 @@ api_key = "file-key"
 """,
     )
     settings = settings_mod.load_settings(path)
-    assert settings["app"]["contract_version"] == "v1"
+    assert settings["app"]["host"] == "127.0.0.1"
     assert settings["agent"]["token"] == "file-token"
     assert settings["evaluator_llm"]["api_key"] == "file-key"
 
 
-def test_contract_version_and_runtime_dir_follow_settings(tmp_path, monkeypatch):
-    monkeypatch.setenv("EVAL_CONTRACT_VERSION", "v1")
+def test_contract_path_is_fixed_and_runtime_dir_follows_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("EVAL_RUNTIME_DIR", str(tmp_path / "env-runtime"))
-    settings = {"app": {"contract_version": "v3"}, "paths": {"runtime_dir": str(tmp_path / "toml-runtime")}}
-    assert resolve_contracts_path(settings).name == "contracts_v3.json"
+    settings = {"app": {}, "paths": {"runtime_dir": str(tmp_path / "toml-runtime")}}
+    assert resolve_contracts_path().name == "contracts.json"
     configure_paths(settings)
     assert runtime_dir() == tmp_path / "toml-runtime"

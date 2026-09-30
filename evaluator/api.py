@@ -7,23 +7,14 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from evaluator.agent_client import FixtureAgentClient, client_from_settings
-from evaluator.contract_loader import CONTRACTS_PATH, load_contracts, resolve_contracts_path
+from evaluator.agent_client import client_from_settings
+from evaluator.contract_loader import load_contracts
 from evaluator.exporter import export_html, export_json, export_xlsx
-from evaluator.golden_loader import load_agent_answers, merge_golden, merge_v1_golden
+from evaluator.golden_loader import business_verified_ids, merge_golden
 from evaluator.llm_client import LlmEvaluator
-from evaluator.mock_demo import (
-    MIXED_ANSWERS_FILE,
-    MIXED_CASE_IDS,
-    FixtureLlmEvaluator,
-    demo_pack,
-    load_script_answers,
-    mixed_outcomes,
-    script_path,
-)
 from evaluator.orchestrator import Orchestrator
 from evaluator.paths import configure_paths, ensure_runtime, golden_dir, runs_dir
 from evaluator.repository import Repository
@@ -43,23 +34,14 @@ _LIVE_LOCK = threading.Lock()
 class CreateRunBody(BaseModel):
     case_ids: Optional[List[str]] = None
     numeric_only: bool = True
-    mode: str = "mock_mixed"
     anchor_time: Optional[str] = None
     agent_name: Optional[str] = None
     consistency_threshold: Optional[float] = None
 
 
-def _load_v1_contracts():
-    if not CONTRACTS_PATH.exists():
-        return []
-    return load_contracts(CONTRACTS_PATH, generate_if_missing=False)
-
-
 def _contracts_by_id(st: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     st = st or state()
-    by_id = {c.case_id: c for c in st.get("contracts_v1") or []}
-    by_id.update({c.case_id: c for c in st["contracts"]})
-    return by_id
+    return {c.case_id: c for c in st["contracts"]}
 
 
 def bootstrap(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -67,32 +49,18 @@ def bootstrap(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     configure_paths(settings)
     ensure_runtime()
     repo = Repository()
-    contracts = load_contracts(resolve_contracts_path(settings))
-    # data/ 不入 git（单独私发）：缺黄金集时降级启动（健康检查显示 golden: missing，
-    # 模拟模式与 v1 历史题不可用），而不是让服务起不来。
+    contracts = load_contracts()
+    # 缺黄金集时降级启动（健康检查显示 golden: missing）。
     try:
         golden = merge_golden()
     except FileNotFoundError:
         golden = {"meta": {}, "cases": [], "excel_count": 0}
-    golden_map = {c["case_id"]: c for c in golden["cases"]}
-    # 模拟 20 题仍用历史题号；从 golden 根目录的独立 v1 文件补期望。
-    try:
-        for case in merge_v1_golden()["cases"]:
-            golden_map.setdefault(case["case_id"], case)
-    except FileNotFoundError:
-        pass
-    try:
-        contracts_v1 = _load_v1_contracts()
-    except FileNotFoundError:
-        contracts_v1 = []
     _STATE.update(
         {
             "settings": settings,
             "repo": repo,
             "contracts": contracts,
-            "contracts_v1": contracts_v1,
             "golden": golden,
-            "golden_map": golden_map,
             "orchestrators": {},
         }
     )
@@ -145,29 +113,15 @@ def health() -> Dict[str, Any]:
     }
 
 
-@router.get("/api/mock-demo")
-def mock_demo() -> Dict[str, Any]:
-    pack = demo_pack()
-    pack["script_exists"] = script_path().exists()
-    return pack
-
-
-@router.get("/api/mock-demo/script")
-def mock_demo_script(download: bool = Query(False)):
-    path = script_path()
-    if not path.exists():
-        _error("not_found", "模拟问答稿不存在", 404)
-    if download:
-        return FileResponse(path, media_type="text/markdown; charset=utf-8", filename=path.name)
-    return PlainTextResponse(path.read_text(encoding="utf-8"), media_type="text/markdown; charset=utf-8")
-
-
 @router.get("/api/catalog")
 def catalog() -> Dict[str, Any]:
-    contracts = state()["contracts"]
+    st = state()
+    contracts = st["contracts"]
+    verified = business_verified_ids(st.get("golden") or {})
     return {
         "total": len(contracts),
         "numeric": sum(1 for c in contracts if c.numeric_evaluable),
+        "verified": sum(1 for c in contracts if c.case_id in verified),
         "cases": [
             {
                 "case_id": c.case_id,
@@ -176,6 +130,7 @@ def catalog() -> Dict[str, Any]:
                 "result_type": c.result_type,
                 "numeric_evaluable": c.numeric_evaluable,
                 "realtime_ready": c.realtime_ready,
+                "business_verified": c.case_id in verified,
             }
             for c in contracts
         ],
@@ -207,110 +162,74 @@ def list_runs() -> Dict[str, Any]:
 def create_run(body: CreateRunBody) -> Dict[str, Any]:
     st = state()
     settings = st["settings"]
-    mode = body.mode or "mock_mixed"
-    if mode not in {"live", "mock_perfect", "mock_errors", "mock_mixed"}:
-        _error("invalid_mode", "mode 必须是 live / mock_mixed / mock_perfect / mock_errors")
-    if mode == "live" and body.anchor_time:
+    if body.anchor_time:
         _error("live_anchor_managed", "真实接口不接收历史时钟参数，实时批次必须使用当前时间")
     agent_name = body.agent_name or "water-loss-agent"
     try:
         threshold = parse_threshold(body.consistency_threshold) if body.consistency_threshold is not None else 1.0
     except (TypeError, ValueError) as exc:
         _error("invalid_threshold", str(exc))
-    is_mock = mode.startswith("mock")
-    if is_mock:
-        run_contracts = st.get("contracts_v1") or st["contracts"]
-        contract_version = "v1"
-        if mode == "mock_mixed":
-            llm_evaluator = FixtureLlmEvaluator(mixed_outcomes(), default_verdict="QUALIFIED")
-        elif mode == "mock_errors":
-            llm_evaluator = FixtureLlmEvaluator({}, default_verdict="UNQUALIFIED", default_issue_code="WRONG_VALUE")
-        else:
-            llm_evaluator = FixtureLlmEvaluator({}, default_verdict="QUALIFIED")
-    else:
-        run_contracts = st["contracts"]
-        contract_version = (settings.get("app") or {}).get("contract_version") or "v3"
-        llm_evaluator = LlmEvaluator(settings.get("evaluator_llm") or {})
+    run_contracts = st["contracts"]
+    llm_evaluator = LlmEvaluator(settings.get("evaluator_llm") or {})
     ctx = build_run_context(
-        body.anchor_time or (datetime.now(timezone.utc) if mode == "live" else "2026-08-17T10:00:00+08:00"),
+        datetime.now(timezone.utc),
         timezone_name=(settings.get("app") or {}).get("timezone") or "Asia/Shanghai",
         agent_name=agent_name,
-        contract_version=contract_version,
-        latest_periods={} if mode == "live" else (st["golden"].get("meta") or {}).get("latest_periods") or {},
+        latest_periods={},
     )
     ctx = ctx.model_copy(update={"consistency_threshold": threshold})
     case_ids = body.case_ids
-    if mode == "mock_mixed" and not case_ids:
-        case_ids = list(MIXED_CASE_IDS)
-    if mode == "live":
-        client = client_from_settings(settings)
-        password = db_password(settings)
-        if not password or not (settings.get("database") or {}).get("user"):
-            _error("database_not_configured", "实时测评需要配置数据库账号与密码，不会使用历史黄金结果代替")
-        if getattr(client, "sequential", False):
-            if not all((client.session_id, client.task_id, client.template_id, client.org_id, client.login_session)):
-                _error("platform_not_configured", "请在 settings.toml 的 platform.curl 粘贴完整消息请求（Copy as cURL bash）")
-            if not case_ids:
-                case_ids = [c.case_id for c in st["contracts"] if c.numeric_evaluable and c.realtime_ready][:10]
-        elif not client.url:
-            _error("agent_not_configured", "智能体接口未配置")
-        connector = make_pg_connector(settings, password) if password else None
-        executor = SqlExecutor(
-            connect=connector,
-            timeout_seconds=int((settings.get("database") or {}).get("timeout_seconds") or 30),
-            max_rows=int((settings.get("database") or {}).get("max_rows") or 5000),
-        )
-    else:
-        if mode == "mock_mixed" and script_path().exists():
-            answers = load_script_answers()
-            client = FixtureAgentClient(answers, model="mock-mixed-agent")
-        else:
-            filename = {
-                "mock_perfect": "agent_answers_perfect.json",
-                "mock_errors": "agent_answers_errors.json",
-                "mock_mixed": MIXED_ANSWERS_FILE,
-            }[mode]
-            payload = load_agent_answers(filename)
-            answers = {c["case_id"]: c.get("final_answer_text") or "" for c in payload.get("cases", [])}
-            client = FixtureAgentClient(answers, model="fixture")
-        executor = SqlExecutor(connect=None)
+    client = client_from_settings(settings)
+    password = db_password(settings)
+    if not password or not (settings.get("database") or {}).get("user"):
+        _error("database_not_configured", "实时测评需要配置数据库账号与密码，不会使用历史黄金结果代替")
+    if getattr(client, "sequential", False):
+        if not all((client.session_id, client.task_id, client.template_id, client.org_id, client.login_session)):
+            _error("platform_not_configured", "请在 settings.toml 的 platform.curl 粘贴完整消息请求（Copy as cURL bash）")
+        if not case_ids:
+            case_ids = [c.case_id for c in st["contracts"] if c.numeric_evaluable and c.realtime_ready][:10]
+    elif not client.url:
+        _error("agent_not_configured", "智能体接口未配置")
+    connector = make_pg_connector(settings, password)
+    executor = SqlExecutor(
+        connect=connector,
+        timeout_seconds=int((settings.get("database") or {}).get("timeout_seconds") or 30),
+        max_rows=int((settings.get("database") or {}).get("max_rows") or 5000),
+    )
 
     known_ids = {c.case_id for c in run_contracts}
     if case_ids and (len(set(case_ids)) != len(case_ids) or set(case_ids) - known_ids):
         _error("invalid_case_ids", "题号必须存在且不能重复")
     guard = None
-    if mode == "live":
-        if not _LIVE_LOCK.acquire(blocking=False):
-            _error("live_run_active", "已有实时测评正在运行", 409)
-        try:
-            # Fail before sending the first question when SQL cannot connect.
-            conn = connector()
-            conn.close()
-            if getattr(client, "sequential", False):
-                guard = SessionGuard(st["repo"].runs_dir.parent / "session_guards", client.session_id)
-                guard.acquire(ctx.run_id)
-        except FileExistsError:
-            _LIVE_LOCK.release()
-            _error("session_unconfirmed", "上次会话执行状态未确认，请在网页确认任务结束后解除暂停", 409)
-        except Exception as exc:
-            _LIVE_LOCK.release()
-            _error("database_preflight_failed", f"数据库连接预检失败：{type(exc).__name__}")
+    if not _LIVE_LOCK.acquire(blocking=False):
+        _error("live_run_active", "已有实时测评正在运行", 409)
+    try:
+        # Fail before sending the first question when SQL cannot connect.
+        conn = connector()
+        conn.close()
+        if getattr(client, "sequential", False):
+            guard = SessionGuard(st["repo"].runs_dir.parent / "session_guards", client.session_id)
+            guard.acquire(ctx.run_id)
+    except FileExistsError:
+        _LIVE_LOCK.release()
+        _error("session_unconfirmed", "上次会话执行状态未确认，请在网页确认任务结束后解除暂停", 409)
+    except Exception as exc:
+        _LIVE_LOCK.release()
+        _error("database_preflight_failed", f"数据库连接预检失败：{type(exc).__name__}")
 
     orch = Orchestrator(
         repo=st["repo"],
         contracts=run_contracts,
-        golden_cases=st["golden_map"],
         agent_client=client,
         sql_executor=executor,
         llm_evaluator=llm_evaluator,
         concurrency=int((settings.get("agent") or {}).get("concurrency") or 3),
-        mode=mode,
-        enable_watermark=mode == "live" and bool((settings.get("watermark") or {}).get("enabled", True)),
+        enable_watermark=bool((settings.get("watermark") or {}).get("enabled", True)),
         timestamp_columns=(settings.get("watermark") or {}).get("timestamp_columns"),
     )
     with _LOCK:
         st["orchestrators"][ctx.run_id] = orch
-    st["repo"].create_run(RunSummary(run_id=ctx.run_id, status=RunStatus.PENDING, mode=mode,
+    st["repo"].create_run(RunSummary(run_id=ctx.run_id, status=RunStatus.PENDING,
                                     anchor_time=ctx.anchor_time.isoformat(), agent_name=agent_name,
                                     consistency_threshold=threshold))
 
@@ -322,17 +241,16 @@ def create_run(body: CreateRunBody) -> Dict[str, Any]:
         except Exception:
             pass
         finally:
-            if mode == "live":
-                if guard and completed:
-                    guard.release()
-                _LIVE_LOCK.release()
+            if guard and completed:
+                guard.release()
+            _LIVE_LOCK.release()
             if hasattr(client, "close"):
                 client.close()
 
     job = threading.Thread(target=_job, daemon=True)
     st.setdefault("jobs", {})[ctx.run_id] = job
     job.start()
-    return {"run_id": ctx.run_id, "status": "RUNNING", "mode": mode, "anchor_time": ctx.anchor_time.isoformat()}
+    return {"run_id": ctx.run_id, "status": "RUNNING", "anchor_time": ctx.anchor_time.isoformat()}
 
 
 @router.get("/api/platform/status")

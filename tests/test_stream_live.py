@@ -5,7 +5,7 @@ import pytest
 
 from evaluator.agent_client import redact_headers
 from evaluator.answer_context import align_answer, params_for_period
-from evaluator.contract_loader import CONTRACTS_PATH, load_contracts
+from evaluator.contract_loader import load_contracts
 from evaluator.models import RunStatus, SqlSnapshot
 from evaluator.orchestrator import Orchestrator
 from evaluator.repository import Repository
@@ -47,7 +47,7 @@ def client_for(content, fail=False, calls=None):
 
 @pytest.fixture
 def contract():
-    return load_contracts(CONTRACTS_PATH)[0]
+    return load_contracts()[0]
 
 
 @pytest.fixture
@@ -128,7 +128,7 @@ def test_safe_tool_time_hint_without_retaining_payload():
 
 
 def test_last_six_months_matching_window_is_aligned():
-    cx02 = next(c for c in load_contracts(CONTRACTS_PATH) if c.case_id == "CX02")
+    cx02 = next(c for c in load_contracts() if c.case_id == "CX-008")
     ctx = build_run_context("2026-09-08")
     text = "| 月份 | 产销差率 |\n|---|---|\n| 2026-03 | 35.34% |\n| 2026-04 | 6.30% |\n| 2026-05 | 16.65% |\n| 2026-06 | 11.57% |\n| 2026-07 | 13.85% |\n| 2026-08 | 14.48% |"
     info, _ = align_answer(cx02, ctx, text)
@@ -166,7 +166,7 @@ def test_inferred_period_empty_sql_falls_back_once(tmp_path, contract, ctx):
 
     repo = Repository(tmp_path / "e.db", tmp_path / "runs")
     orch = Orchestrator(repo, [contract], agent_client=client_for(done("集团当月供水量100，售水量90，产销差率10%")),
-                        sql_executor=DB(connect=lambda: None), mode="live", enable_watermark=False)
+                        sql_executor=DB(connect=lambda: None), enable_watermark=False)
     orch.start_run(ctx)
     detail = repo.load_case_detail(ctx.run_id, contract.case_id)
     assert calls == [{"period": 202609}, {"period": 202608}]
@@ -185,7 +185,7 @@ def test_sql_error_does_not_trigger_period_fallback(tmp_path, contract, ctx):
 
     repo = Repository(tmp_path / "e.db", tmp_path / "runs")
     orch = Orchestrator(repo, [contract], agent_client=client_for(done("集团当月产销差率10%")),
-                        sql_executor=DB(connect=lambda: None), mode="live", enable_watermark=False)
+                        sql_executor=DB(connect=lambda: None), enable_watermark=False)
     orch.start_run(ctx)
     detail = repo.load_case_detail(ctx.run_id, contract.case_id)
     assert calls == [{"period": 202609}]
@@ -196,7 +196,7 @@ def test_sql_error_does_not_trigger_period_fallback(tmp_path, contract, ctx):
 
 
 def test_period_override_moves_all_month_boundaries(ctx):
-    contract = load_contracts(CONTRACTS_PATH)[0].model_copy(update={
+    contract = load_contracts()[0].model_copy(update={
         "parameter_resolver": "month_range",
         "sql_template": "SELECT :period, :period_prev, :start_date, :end_date, :next_month_start, :year_start",
     })
@@ -242,7 +242,7 @@ def test_same_session_ten_sequential_and_independent_results(tmp_path, contract,
             return SqlSnapshot(rows=[{"supply": 50380000, "sales": 44411900, "rate": 11.85}], latency_ms=1)
     repo = Repository(tmp_path / "e.db", tmp_path / "runs")
     orch = Orchestrator(repo, contracts, agent_client=client, sql_executor=DB(connect=lambda: None),
-                        mode="live", enable_watermark=False, concurrency=10)
+                        enable_watermark=False, concurrency=10)
     summary = orch.start_run(ctx)
     assert summary.status == RunStatus.COMPLETED
     assert len(calls) == 10 and all(c["sessionId"] == "s" for c in calls)
@@ -260,7 +260,7 @@ def test_unknown_completion_stops_remaining_nine(tmp_path, contract, ctx):
     client = client_for(frame("response.output_text.delta", delta="unfinished"), calls=calls)
     repo = Repository(tmp_path / "e.db", tmp_path / "runs")
     contracts = [contract.model_copy(update={"case_id": f"Q{i}"}) for i in range(10)]
-    orch = Orchestrator(repo, contracts, agent_client=client, mode="live", enable_watermark=False)
+    orch = Orchestrator(repo, contracts, agent_client=client, enable_watermark=False)
     summary = orch.start_run(ctx)
     assert summary.status == RunStatus.INTERRUPTED and len(calls) == 1
     assert sum(r["not_scored_reason"] == "NOT_SENT_SESSION_BLOCKED" for r in repo.list_cases(ctx.run_id)) == 9
@@ -268,8 +268,8 @@ def test_unknown_completion_stops_remaining_nine(tmp_path, contract, ctx):
 
 def test_live_missing_db_never_uses_golden(tmp_path, contract, ctx):
     repo = Repository(tmp_path / "e.db", tmp_path / "runs")
-    orch = Orchestrator(repo, [contract], golden_cases={contract.case_id: {"expected": {}}},
-                        agent_client=client_for(done(ANSWER)), mode="live", enable_watermark=False)
+    orch = Orchestrator(repo, [contract],
+                        agent_client=client_for(done(ANSWER)), enable_watermark=False)
     orch.start_run(ctx)
     detail = repo.load_case_detail(ctx.run_id, contract.case_id)
     assert detail["result"]["not_scored_reason"] == "SQL_FAIL"
@@ -286,7 +286,7 @@ def test_unaligned_answer_still_queries_and_compares(tmp_path, contract, ctx):
                                rows=[{"supply": 123, "sales": 100, "rate": 0.1}], latency_ms=2, row_count=1)
     repo = Repository(tmp_path / "e.db", tmp_path / "runs")
     orch = Orchestrator(repo, [contract], agent_client=client_for(done("本月为8月，累计截至7月")),
-                        sql_executor=DB(connect=lambda: None), mode="live", enable_watermark=False)
+                        sql_executor=DB(connect=lambda: None), enable_watermark=False)
     summary = orch.start_run(ctx)
     detail = repo.load_case_detail(ctx.run_id, contract.case_id)
     assert len(calls) == 1
@@ -306,7 +306,7 @@ def test_agent_fail_still_runs_sql(tmp_path, contract, ctx):
                                rows=[{"supply": 1, "sales": 1, "rate": 0.1}], row_count=1)
     repo = Repository(tmp_path / "e.db", tmp_path / "runs")
     orch = Orchestrator(repo, [contract], agent_client=client_for(frame("response.output_text.delta", delta="unfinished")),
-                        sql_executor=DB(connect=lambda: None), mode="live", enable_watermark=False)
+                        sql_executor=DB(connect=lambda: None), enable_watermark=False)
     orch.start_run(ctx)
     detail = repo.load_case_detail(ctx.run_id, contract.case_id)
     assert calls and calls[0]["period"] == 202609
@@ -327,7 +327,7 @@ def test_empty_current_metrics_fallback_even_if_agent_confirmed(tmp_path, contra
     repo = Repository(tmp_path / "e.db", tmp_path / "runs")
     orch = Orchestrator(repo, [contract],
                         agent_client=client_for(done("集团 2026年9月当月供水量100，售水量90，产销差率10%")),
-                        sql_executor=DB(connect=lambda: None), mode="live", enable_watermark=False)
+                        sql_executor=DB(connect=lambda: None), enable_watermark=False)
     orch.start_run(ctx)
     detail = repo.load_case_detail(ctx.run_id, contract.case_id)
     assert [item["period"] for item in calls] == [202609, 202608]
@@ -338,7 +338,7 @@ def test_empty_current_metrics_fallback_even_if_agent_confirmed(tmp_path, contra
 def test_sql_recheck_preserves_original_evidence(tmp_path, contract, ctx):
     from evaluator.sql_recheck import recheck_sql
     repo = Repository(tmp_path / "e.db", tmp_path / "runs")
-    Orchestrator(repo, [contract], agent_client=client_for(done(ANSWER)), mode="live", enable_watermark=False).start_run(ctx)
+    Orchestrator(repo, [contract], agent_client=client_for(done(ANSWER)), enable_watermark=False).start_run(ctx)
     before = repo.load_case_detail(ctx.run_id, contract.case_id)
     class DB(SqlExecutor):
         def query(self, template, params=None):
@@ -388,10 +388,10 @@ def test_live_api_missing_credentials_and_invalid_ids(monkeypatch, contract):
     settings = {"database": {}, "platform": {"enabled": True}}
     monkeypatch.setattr(api, "state", lambda: {"settings": settings, "golden": {}, "contracts": [contract]})
     with pytest.raises(HTTPException) as caught:
-        api.create_run(api.CreateRunBody(mode="live"))
+        api.create_run(api.CreateRunBody())
     assert caught.value.detail["code"] == "database_not_configured"
     with pytest.raises(HTTPException) as caught:
-        api.create_run(api.CreateRunBody(mode="live", anchor_time="2020-01-01"))
+        api.create_run(api.CreateRunBody(anchor_time="2020-01-01"))
     assert caught.value.detail["code"] == "live_anchor_managed"
 
 
@@ -415,7 +415,7 @@ def test_reports_keep_context_and_escape_answer(tmp_path, contract, ctx):
     from openpyxl import load_workbook
     repo = Repository(tmp_path / "e.db", tmp_path / "runs")
     orch = Orchestrator(repo, [contract], agent_client=client_for(done(ANSWER + "\n<script>alert(1)</script>")),
-                        mode="live", enable_watermark=False)
+                        enable_watermark=False)
     orch.start_run(ctx)
     html = export_html(repo, ctx.run_id, tmp_path / "report.html").read_text(encoding="utf-8")
     assert "&lt;script&gt;" in html and "<script>" not in html

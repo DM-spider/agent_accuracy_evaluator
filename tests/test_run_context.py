@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
-from evaluator.contract_builder import build_contract, historical_params_for, template_matches_source
-from evaluator.golden_loader import merge_v1_golden
-from evaluator.run_context import build_run_context, params_for_resolver, preview_sql
+from evaluator.run_context import build_run_context, params_for_resolver
 
 
 def test_fixed_clock_relative_periods():
@@ -11,10 +9,7 @@ def test_fixed_clock_relative_periods():
     assert ctx.previous_month == "202607"
     assert ctx.current_month_start == "2026-08-01"
     assert ctx.next_month_start == "2026-09-01"
-    assert ctx.last_7_start == "2026-08-25"
-    assert ctx.last_30_start == "2026-08-02"
     assert ctx.year_start == "2026-01-01"
-    assert ctx.jan_may_period == "202605"
     assert ctx.yoy_month == "202507"
     assert ctx.last_6_months[0] == "202602"
     assert ctx.last_6_months[-1] == "202607"
@@ -29,7 +24,7 @@ def test_resolvers_use_explicit_anchor_only():
     assert ctx.current_month == "202608"
 
 
-def test_v3_period_resolvers():
+def test_period_resolvers():
     ctx = build_run_context(
         "2026-08-17",
         latest_periods={"SzwgBusinessYear": 202607, "SzwgBusiness": 202606},
@@ -51,30 +46,3 @@ def test_v3_period_resolvers():
     mom = params_for_resolver(ctx, "single_mom")
     assert mom["period"] == 202606
     assert mom["period_prev"] == 202605
-
-
-def test_historical_sql_templates_equivalent():
-    golden = merge_v1_golden()
-    mismatches = []
-    blocked = []
-    for case in golden["cases"]:
-        contract = build_contract(case)
-        if not contract.numeric_evaluable:
-            continue
-        if not contract.realtime_ready:
-            blocked.append(contract.case_id)
-            continue
-        if not template_matches_source(case, contract):
-            params = historical_params_for(case, contract)
-            mismatches.append(
-                (
-                    contract.case_id,
-                    preview_sql(contract.sql_template, params)[:180],
-                    (contract.sql_source or "")[:180],
-                )
-            )
-    assert not mismatches, mismatches[:5]
-    # 未完成迁移的题目不得被当成可评分
-    for case_id in blocked:
-        contract = build_contract(next(c for c in golden["cases"] if c["case_id"] == case_id))
-        assert contract.not_scored_reason == "SQL_NOT_REALTIME_READY"

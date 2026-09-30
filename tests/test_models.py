@@ -30,15 +30,9 @@ def _ctx(**kwargs) -> RunContext:
         current_month_end="2026-08-31",
         previous_month_start="2026-07-01",
         previous_month_end="2026-07-31",
-        last_7_start="2026-08-25",
-        last_7_end="2026-08-31",
-        last_30_start="2026-08-02",
-        last_30_end="2026-08-31",
         year_start="2026-01-01",
         today="2026-08-31",
         yesterday="2026-08-30",
-        week_start="2026-08-31",
-        jan_may_period="202605",
         yoy_month="202508",
     )
     payload.update(kwargs)

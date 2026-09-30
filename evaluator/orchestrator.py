@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional, Sequence
 from evaluator.answer_context import align_answer, params_for_period
 from evaluator.llm_evidence import DEFAULT_MAX_INPUT_CHARS, build_evaluation_evidence
 from evaluator.llm_evaluation import unevaluable_artifact, validate_numeric_differences
-from evaluator.mock_demo import expected_table
 from evaluator.models import (
     AgentAnswer,
     CaseContract,
@@ -78,24 +77,22 @@ def _empty_sql(contract: CaseContract, snapshot: SqlSnapshot) -> bool:
 def _fallback_sql(executor, contract, run_context, params, snapshot, alignment):
     if snapshot.error or not _empty_sql(contract, snapshot) or not isinstance(params.get("period"), int):
         return snapshot, params
-    original = snapshot
-    for offset in range(1, 4):
-        candidate_period = ym_shift(params["period"], -offset)
-        candidate = template_params(contract.sql_template, params_for_period(contract, run_context, candidate_period))
-        probe = executor.query(contract.sql_template, candidate)
-        alignment.setdefault("sql_attempts", []).append({
-            "params": candidate,
-            "status": "error" if probe.error else "empty" if _empty_sql(contract, probe) else "ok",
-            "row_count": probe.row_count,
-        })
-        if not probe.error and not _empty_sql(contract, probe):
-            alignment["sql_params"] = candidate
-            alignment["period_source"] = "database_fallback"
-            alignment["period_confidence"] = "inferred"
-            alignment["period_changed"] = True
-            alignment.setdefault("issues", []).append("DATABASE_PERIOD_FALLBACK")
-            return probe, candidate
-    return original, params
+    candidate_period = ym_shift(params["period"], -1)
+    candidate = template_params(contract.sql_template, params_for_period(contract, run_context, candidate_period))
+    probe = executor.query(contract.sql_template, candidate)
+    alignment.setdefault("sql_attempts", []).append({
+        "params": candidate,
+        "status": "error" if probe.error else "empty" if _empty_sql(contract, probe) else "ok",
+        "row_count": probe.row_count,
+    })
+    if not probe.error and not _empty_sql(contract, probe):
+        alignment["sql_params"] = candidate
+        alignment["period_source"] = "database_fallback"
+        alignment["period_confidence"] = "inferred"
+        alignment["period_changed"] = True
+        alignment.setdefault("issues", []).append("DATABASE_PERIOD_FALLBACK")
+        return probe, candidate
+    return snapshot, params
 
 
 class Orchestrator:
@@ -103,25 +100,21 @@ class Orchestrator:
         self,
         repo: Repository,
         contracts: Sequence[CaseContract],
-        golden_cases: Optional[Dict[str, Dict]] = None,
         agent_client: Any = None,
         sql_executor: Optional[SqlExecutor] = None,
         llm_evaluator: Any = None,
         *,
         concurrency: int = 3,
-        mode: str = "live",
         enable_watermark: bool = True,
         timestamp_columns: Optional[List[str]] = None,
     ):
         self.repo = repo
         self.contracts = list(contracts)
         self.contracts_by_id = {c.case_id: c for c in self.contracts}
-        self.golden_cases = golden_cases or {}
         self.agent_client = agent_client
         self.sql_executor = sql_executor
         self.llm_evaluator = llm_evaluator
         self.concurrency = max(1, concurrency)
-        self.mode = mode
         self.enable_watermark = enable_watermark
         self.timestamp_columns = timestamp_columns
         self._lock = threading.Lock()
@@ -143,11 +136,9 @@ class Orchestrator:
             anchor_time=run_context.anchor_time.isoformat(),
             timezone=run_context.timezone,
             agent_name=run_context.agent_name,
-            contract_version=run_context.contract_version,
             total_cases=len(selected),
             progress_done=0,
             progress_total=len(selected),
-            mode=self.mode,
             consistency_threshold=run_context.consistency_threshold,
         )
         self.repo.create_run(summary)
@@ -224,7 +215,6 @@ class Orchestrator:
             timezone_name=run_context.timezone,
             watermark_stable=all("WATERMARK_CHANGED" not in r.error_types for r in results),
             status=RunStatus.INTERRUPTED if self.session_blocked else RunStatus.COMPLETED,
-            mode=self.mode,
             consistency_threshold=run_context.consistency_threshold,
         )
         summary.started_at = started_at
@@ -341,7 +331,7 @@ class Orchestrator:
             )
             tables = tables_in_sql(contract.sql_template or "")
             before = after = None
-            if self.enable_watermark and self.sql_executor and self.mode == "live":
+            if self.enable_watermark and self.sql_executor:
                 before = capture_watermark(self.sql_executor, tables, self.timestamp_columns)
 
             agent_answer = self.agent_client.ask(contract, run_context) if self.agent_client else AgentAnswer(
@@ -351,7 +341,7 @@ class Orchestrator:
             extract_text = agent_answer.text or ""
             if agent_failed:
                 logs["agent_error"] = agent_answer.error
-            elif self.mode == "live":
+            else:
                 alignment, extract_text = align_answer(
                     contract, run_context, agent_answer.text,
                     (agent_answer.response_body or {}).get("time_hints"),
@@ -360,30 +350,17 @@ class Orchestrator:
                     params = alignment["sql_params"]
                 else:
                     alignment["executed_params"] = params
-            if self.mode.startswith("mock"):
-                golden = self.golden_cases.get(contract.case_id) or {}
-                columns, rows = expected_table(golden)
-                sql_snapshot = SqlSnapshot(
-                    sql_template=contract.sql_template,
-                    params=params,
-                    executed_sql="",
-                    columns=columns,
-                    rows=rows,
-                    row_count=len(rows),
-                    source="golden_expected",
-                )
-            elif self.sql_executor is not None and self.sql_executor.connect is not None:
+            if self.sql_executor is not None and self.sql_executor.connect is not None:
                 sql_snapshot = self.sql_executor.query(contract.sql_template, params)
                 alignment["sql_attempts"] = [{"params": params, "status": "error" if sql_snapshot.error else "empty" if _empty_sql(contract, sql_snapshot) else "ok", "row_count": sql_snapshot.row_count}]
-                if self.mode == "live":
-                    sql_snapshot, params = _fallback_sql(
-                        self.sql_executor, contract, run_context, params, sql_snapshot, alignment
-                    )
+                sql_snapshot, params = _fallback_sql(
+                    self.sql_executor, contract, run_context, params, sql_snapshot, alignment
+                )
             else:
                 sql_snapshot = SqlSnapshot(sql_template=contract.sql_template, params=params,
                                            error="database connection is not configured")
 
-            if self.enable_watermark and self.sql_executor and self.mode == "live":
+            if self.enable_watermark and self.sql_executor:
                 after = capture_watermark(self.sql_executor, tables, self.timestamp_columns)
                 watermark_flag = watermark_changed(before, after)
                 if sql_snapshot:
@@ -411,7 +388,7 @@ class Orchestrator:
             alignment["fallback_reason"] = alignment.get("fallback_reason") or "requested_period_no_data"
             alignment["effective_period"] = alignment.get("effective_period") or alignment.get("sql_period")
 
-        # 唯一自动结论来源：LLM 结构化评估。失败保存 UNEVALUABLE，不回退旧规则。
+        # 结论来源：LLM 结构化评估；失败保存 UNEVALUABLE。
         artifact, reused = self._evaluate_with_llm(run_context, contract, extract_text, sql_snapshot, alignment)
         if not reused:
             self.repo.save_llm_evaluation(run_context.run_id, contract.case_id, artifact)

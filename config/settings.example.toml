@@ -2,12 +2,11 @@
 host = "127.0.0.1"
 port = 8765
 timezone = "Asia/Shanghai"
-contract_version = "v3"
 open_browser = true
 
 [paths]
-# 留空则使用本工具 data/golden 与 runtime/，不引用工具目录外的数据。
-# 所有运行配置只从 settings.toml 读取，不支持环境变量覆盖。
+# 留空则使用本工具 data/golden 与 runtime/。
+# 所有运行配置只从 settings.toml 读取。
 golden_dir = ""
 runtime_dir = ""
 

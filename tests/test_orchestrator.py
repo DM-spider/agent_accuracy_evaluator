@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 
-from evaluator.agent_client import FixtureAgentClient
+from tests._fakes import FixtureAgentClient, StubSqlExecutor
 from evaluator.llm_evaluation import artifact_from_evaluation, unevaluable_artifact
 from evaluator.models import (
     REQUIRED_DIMENSIONS,
@@ -85,13 +85,6 @@ class BoomSql(SqlExecutor):
         return SqlSnapshot(rows=[{"产销差率": 5.51}], columns=["产销差率"], row_count=1)
 
 
-def _golden():
-    return {
-        case_id: {"expected": {"fields": [{"key": "产销差率", "value": 5.51, "unit": "%"}]}}
-        for case_id in ["PASS1", "FAIL1", "SQL1", "AGENT1", "WM1"]
-    }
-
-
 def _answers():
     return {
         "PASS1": "| 指标 | 数值 |\n|---|---|\n| 产销差率 | 5.51% |",
@@ -112,9 +105,9 @@ def test_success_calls_llm_once_and_maps_verdict(tmp_path):
     contracts = [_contract("PASS1"), _contract("FAIL1")]
     evaluator = FakeLlmEvaluator({"FAIL1": {"verdict": "UNQUALIFIED", "issue_codes": ["WRONG_VALUE"]}})
     orch = Orchestrator(
-        repo, contracts, golden_cases=_golden(), agent_client=FixtureAgentClient(_answers()),
-        sql_executor=SqlExecutor(connect=None), llm_evaluator=evaluator,
-        mode="mock_perfect", enable_watermark=False, concurrency=1,
+        repo, contracts, agent_client=FixtureAgentClient(_answers()),
+        sql_executor=StubSqlExecutor(), llm_evaluator=evaluator,
+        enable_watermark=False, concurrency=1,
     )
     ctx = build_run_context("2026-08-17")
     summary = orch.start_run(ctx, ["PASS1", "FAIL1"], include_non_numeric=True)
@@ -139,9 +132,9 @@ def test_sql_fail_and_agent_fail_skip_llm(tmp_path):
     contracts = [_contract("SQL1"), _contract("AGENT1")]
     evaluator = FakeLlmEvaluator()
     orch = Orchestrator(
-        repo, contracts, golden_cases=_golden(), agent_client=MixedClient(),
+        repo, contracts, agent_client=MixedClient(),
         sql_executor=BoomSql(boom=True), llm_evaluator=evaluator,
-        mode="live", enable_watermark=False, concurrency=1,
+        enable_watermark=False, concurrency=1,
     )
     ctx = build_run_context("2026-08-17")
     orch.start_run(ctx, ["SQL1", "AGENT1"], include_non_numeric=True)
@@ -161,9 +154,9 @@ def test_watermark_change_skips_llm(tmp_path, monkeypatch):
     contract = _contract("WM1")
     evaluator = FakeLlmEvaluator()
     orch = Orchestrator(
-        repo, [contract], golden_cases=_golden(), agent_client=FixtureAgentClient(_answers()),
+        repo, [contract], agent_client=FixtureAgentClient(_answers()),
         sql_executor=BoomSql(boom=False), llm_evaluator=evaluator,
-        mode="live", enable_watermark=True, concurrency=1,
+        enable_watermark=True, concurrency=1,
     )
     ctx = build_run_context("2026-08-17")
     orch.start_run(ctx, ["WM1"], include_non_numeric=True)
@@ -184,9 +177,9 @@ def test_llm_failure_saves_unevaluable_without_rule_fallback(tmp_path):
     repo = Repository(db_path=tmp_path / "e.db", runs_dir=tmp_path / "runs")
     contract = _contract("PASS1")
     orch = Orchestrator(
-        repo, [contract], golden_cases=_golden(), agent_client=FixtureAgentClient(_answers()),
-        sql_executor=SqlExecutor(connect=None), llm_evaluator=FailingEvaluator(),
-        mode="mock_perfect", enable_watermark=False, concurrency=1,
+        repo, [contract], agent_client=FixtureAgentClient(_answers()),
+        sql_executor=StubSqlExecutor(), llm_evaluator=FailingEvaluator(),
+        enable_watermark=False, concurrency=1,
     )
     ctx = build_run_context("2026-08-17")
     orch.start_run(ctx, ["PASS1"], include_non_numeric=True)
@@ -202,9 +195,9 @@ def test_missing_evaluator_is_unevaluable(tmp_path):
     repo = Repository(db_path=tmp_path / "e.db", runs_dir=tmp_path / "runs")
     contract = _contract("PASS1")
     orch = Orchestrator(
-        repo, [contract], golden_cases=_golden(), agent_client=FixtureAgentClient(_answers()),
-        sql_executor=SqlExecutor(connect=None), llm_evaluator=None,
-        mode="mock_perfect", enable_watermark=False, concurrency=1,
+        repo, [contract], agent_client=FixtureAgentClient(_answers()),
+        sql_executor=StubSqlExecutor(), llm_evaluator=None,
+        enable_watermark=False, concurrency=1,
     )
     ctx = build_run_context("2026-08-17")
     orch.start_run(ctx, ["PASS1"], include_non_numeric=True)
@@ -217,15 +210,15 @@ def test_same_input_hash_reuses_saved_evaluation(tmp_path):
     first = FakeLlmEvaluator()
     ctx = build_run_context("2026-08-17")
     Orchestrator(
-        repo, [contract], golden_cases=_golden(), agent_client=FixtureAgentClient(_answers()),
-        sql_executor=SqlExecutor(connect=None), llm_evaluator=first,
-        mode="mock_perfect", enable_watermark=False, concurrency=1,
+        repo, [contract], agent_client=FixtureAgentClient(_answers()),
+        sql_executor=StubSqlExecutor(), llm_evaluator=first,
+        enable_watermark=False, concurrency=1,
     ).start_run(ctx, ["PASS1"], include_non_numeric=True)
     assert first.calls == ["PASS1"]
     second = FakeLlmEvaluator()
     Orchestrator(
-        repo, [contract], golden_cases=_golden(), agent_client=FixtureAgentClient(_answers()),
-        sql_executor=SqlExecutor(connect=None), llm_evaluator=second,
-        mode="mock_perfect", enable_watermark=False, concurrency=1,
+        repo, [contract], agent_client=FixtureAgentClient(_answers()),
+        sql_executor=StubSqlExecutor(), llm_evaluator=second,
+        enable_watermark=False, concurrency=1,
     ).start_run(ctx, ["PASS1"], include_non_numeric=True)
     assert second.calls == []

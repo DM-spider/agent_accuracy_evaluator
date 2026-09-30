@@ -9,7 +9,6 @@ from typing import Any, Callable, Dict, Optional
 import httpx
 
 from evaluator.models import AgentAnswer, CaseContract, RunContext
-from evaluator.mock_demo import MOCK_AGENT_URL, build_agent_exchange
 
 SENSITIVE_KEYS = ("authorization", "token", "api-key", "x-api-key", "cookie", "x-session-id")
 
@@ -152,62 +151,6 @@ class AgentClient:
             error=last_error,
             latency_ms=int((time.perf_counter() - started) * 1000),
             retries=retries_used,
-        )
-
-
-class FixtureAgentClient:
-    """回放问答稿/样本，报文形状与真实智能体 HTTP 调用一致。"""
-
-    def __init__(
-        self,
-        answers: Dict[str, str],
-        error: Optional[str] = None,
-        *,
-        url: str = MOCK_AGENT_URL,
-        model: str = "mock-mixed-agent",
-    ):
-        self.answers = answers
-        self.error = error
-        self.url = url
-        self.model = model
-
-    def ask(self, case: CaseContract, run_context: RunContext) -> AgentAnswer:
-        if self.error:
-            request, _ = build_agent_exchange(
-                case.case_id,
-                case.question,
-                "",
-                anchor_time=run_context.anchor_time.isoformat(),
-                timezone_name=run_context.timezone,
-                model=self.model,
-            )
-            return AgentAnswer(
-                case_id=case.case_id,
-                question=case.question,
-                error=self.error,
-                http_url=self.url,
-                http_status=500,
-                request_body=request,
-                response_body={"ok": False, "error": self.error},
-            )
-        text = self.answers.get(case.case_id, "")
-        request, response = build_agent_exchange(
-            case.case_id,
-            case.question,
-            text,
-            anchor_time=run_context.anchor_time.isoformat(),
-            timezone_name=run_context.timezone,
-            model=self.model,
-        )
-        return AgentAnswer(
-            case_id=case.case_id,
-            question=case.question,
-            text=text,
-            model=self.model,
-            http_url=self.url,
-            http_status=200,
-            request_body=request,
-            response_body=response,
         )
 
 

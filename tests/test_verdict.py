@@ -65,7 +65,7 @@ def test_manual_override_beats_llm_verdict():
     assert judgment["evaluable"] is False
 
 
-def test_missing_llm_evaluation_is_unevaluable_without_legacy_rules():
+def test_missing_llm_evaluation_is_unevaluable():
     judgment = case_judgment(None)
     assert judgment["auto_verdict"] == UNEVALUABLE
     assert judgment["final_verdict"] == UNEVALUABLE

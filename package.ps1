@@ -15,18 +15,10 @@ New-Item -ItemType Directory -Force -Path $dist | Out-Null
   --add-data "evaluator/static;evaluator/static" `
   --add-data "config/settings.example.toml;config" `
   --add-data "config/contracts.json;config" `
-  --add-data "config/contracts_v3.json;config" `
   --add-data "config/metric_aliases.json;config" `
   --add-data "config/organization_aliases.json;config" `
   --add-data "data/golden/golden_dataset.json;data/golden" `
   --add-data "data/golden/漏损问答黄金测评集.xlsx;data/golden" `
-  --add-data "data/golden/golden_dataset_v1.json;data/golden" `
-  --add-data "data/golden/漏损问答黄金测评集_v1.xlsx;data/golden" `
-  --add-data "data/golden/agent_answers_perfect.json;data/golden" `
-  --add-data "data/golden/agent_answers_errors.json;data/golden" `
-  --add-data "data/golden/agent_answers_mixed.json;data/golden" `
-  --add-data "docs/模拟智能体20题.md;docs" `
-  --add-data "data/golden/模拟智能体20题.md;data/golden" `
   --hidden-import uvicorn.logging --hidden-import uvicorn.protocols.http.auto `
   start.py
 

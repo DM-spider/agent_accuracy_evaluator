@@ -60,10 +60,6 @@ function stamp(status) {
   return `<span class="stamp ${status || ""}">${labels[status] || status || "—"}</span>`;
 }
 
-function modeLabel(mode) {
-  return {live: "实时", mock_mixed: "模拟 20 题", mock_perfect: "模拟（全对）", mock_errors: "模拟（全错）"}[mode] || mode || "—";
-}
-
 function verdictLabel(status) {
   return {QUALIFIED: "合格", PARTIAL: "部分作答", UNQUALIFIED: "不合格", UNEVALUABLE: "无法评估"}[status] || status || "无法评估";
 }
@@ -172,7 +168,7 @@ function sqlTable(snapshot, resultsOnly = false) {
   }
   if (resultsOnly) return table;
   const more = rows.length > pageSize ? `<p>仅显示前 ${pageSize} 行，共 ${rows.length} 行。</p>` : "";
-  return `<div class="kicker">${snapshot.source === "golden_expected" ? "未执行 SQL" : `耗时 ${snapshot.latency_ms || 0} ms`} · ${rows.length} 行${snapshot.truncated ? "（截断）" : ""}</div>${table}${more}`;
+  return `<div class="kicker">耗时 ${snapshot.latency_ms || 0} ms · ${rows.length} 行${snapshot.truncated ? "（截断）" : ""}</div>${table}${more}`;
 }
 
 function renderLlmDiff(evaluation, judgment) {
@@ -222,14 +218,14 @@ async function renderIndex() {
   const data = await api("/api/runs");
   const box = document.getElementById("run-list");
   if (!data.runs.length) {
-    box.innerHTML = `<div class="empty">还没有测评批次。点击右上角「新建测评」开始，可用 Mock 样本先跑通页面。</div>`;
+    box.innerHTML = `<div class="empty">还没有测评批次。点击右上角「新建测评」开始。</div>`;
     return;
   }
-  box.innerHTML = `<table><thead><tr><th>运行编号</th><th>状态</th><th>模式</th><th>通过率</th><th>准确率</th><th>可评估率</th><th></th></tr></thead><tbody>${
+  box.innerHTML = `<table><thead><tr><th>运行编号</th><th>状态</th><th>通过率</th><th>准确率</th><th>可评估率</th><th></th></tr></thead><tbody>${
     data.runs.map(r => {
       const s = r.summary || {};
       const h = s.headline_metrics || {};
-      return `<tr class="clickable" data-id="${r.run_id}"><td>${r.run_id}</td><td>${stamp(r.status)}</td><td>${escapeHtml(modeLabel(r.mode || s.mode))}</td><td class="num">${pct(h.pass_rate ?? s.case_pass_rate)}</td><td class="num">${pct(h.accuracy ?? s.numeric_accuracy)}</td><td class="num">${pct(h.assessability ?? s.assessability_rate)}</td><td><a href="/runs/${r.run_id}">打开</a></td></tr>`;
+      return `<tr class="clickable" data-id="${r.run_id}"><td>${r.run_id}</td><td>${stamp(r.status)}</td><td class="num">${pct(h.pass_rate ?? s.case_pass_rate)}</td><td class="num">${pct(h.accuracy ?? s.numeric_accuracy)}</td><td class="num">${pct(h.assessability ?? s.assessability_rate)}</td><td><a href="/runs/${r.run_id}">打开</a></td></tr>`;
     }).join("")
   }</tbody></table>`;
   box.querySelectorAll("tr.clickable").forEach(tr => tr.addEventListener("click", () => location.href = "/runs/" + tr.dataset.id));
@@ -251,25 +247,23 @@ function shuffled(items) {
   return copy;
 }
 
-async function questionPool(mode, all = false) {
-  if (mode === "live") {
-    const catalog = await api("/api/catalog");
-    const cases = catalog.cases || [];
-    if (all) return cases.map(item => item.case_id);
-    return cases.filter(item => item.numeric_evaluable && item.realtime_ready).map(item => item.case_id);
-  }
-  const pack = await api("/api/mock-demo");
-  return pack.case_ids || [];
+async function questionPool(all = false, predicate = null) {
+  const catalog = await api("/api/catalog");
+  let cases = catalog.cases || [];
+  if (!all) cases = cases.filter(item => item.numeric_evaluable && item.realtime_ready);
+  if (predicate) cases = cases.filter(predicate);
+  return cases.map(item => item.case_id);
 }
 
-async function resolveScope(mode, scope) {
+async function resolveScope(scope) {
   if (scope === "custom") {
     const caseIds = document.getElementById("case-ids").value.split(/[,，\s]+/).filter(Boolean);
     if (!caseIds.length) throw new Error("请输入题号");
     return caseIds;
   }
-  const pool = await questionPool(mode, scope === "all");
-  if (!pool.length) throw new Error("当前模式没有可测评题目");
+  if (scope === "verified") return questionPool(false, item => item.business_verified);
+  const pool = await questionPool(scope === "all");
+  if (!pool.length) throw new Error("当前范围没有可测评题目");
   if (scope === "all") return pool;
   if (scope === "sequential10") return pool.slice(0, 10);
   if (scope === "random10") return shuffled(pool).slice(0, 10);
@@ -277,13 +271,10 @@ async function resolveScope(mode, scope) {
 }
 
 function applyCreateRunUi() {
-  const live = document.getElementById("mode").value === "live";
   const scope = document.getElementById("scope");
-  document.getElementById("scope-fields").hidden = !live;
-  document.getElementById("mock-hint").hidden = live;
-  document.getElementById("anchor").disabled = live;
-  if (live) document.getElementById("anchor").value = "";
-  document.getElementById("custom-ids").hidden = !live || scope.value !== "custom";
+  document.getElementById("anchor").disabled = true;
+  document.getElementById("anchor").value = "";
+  document.getElementById("custom-ids").hidden = scope.value !== "custom";
 }
 
 async function startRun() {
@@ -291,11 +282,9 @@ async function startRun() {
   button.disabled = true;
   document.getElementById("start-error").textContent = "";
   try {
-  const mode = document.getElementById("mode").value;
-  const scope = mode === "live" ? document.getElementById("scope").value : "all";
-  const case_ids = await resolveScope(mode, scope);
+  const scope = document.getElementById("scope").value;
+  const case_ids = await resolveScope(scope);
   const body = {
-    mode,
     numeric_only: scope !== "all",
     case_ids,
     anchor_time: document.getElementById("anchor").value || null,
@@ -441,7 +430,7 @@ async function renderCase() {
       <section><h3>原始返回</h3><pre class="payload-code">${escapeHtml(JSON.stringify(resp, null, 2) || "无返回报文")}</pre></section>
     </div>`;
   document.getElementById("tab-sql").innerHTML = `<h3>查询摘要</h3>
-    <div class="query-summary">${[["来源", sql.source === "golden_expected" ? "Mock 金标" : supplemental ? "事后补查" : "原批次查询"], ["状态", sql.error ? "查询失败" : sql.columns ? "查询完成" : "未执行"], ["耗时", sql.columns ? duration(sql.latency_ms) : "未记录"], ["结果", `${(sql.rows || []).length} 行${sql.truncated ? "（已截断）" : ""}`]].map(([key, value]) => `<span>${escapeHtml(key)}：${escapeHtml(value)}</span>`).join("")}</div>
+    <div class="query-summary">${[["来源", supplemental ? "事后补查" : "原批次查询"], ["状态", sql.error ? "查询失败" : sql.columns ? "查询完成" : "未执行"], ["耗时", sql.columns ? duration(sql.latency_ms) : "未记录"], ["结果", `${(sql.rows || []).length} 行${sql.truncated ? "（已截断）" : ""}`]].map(([key, value]) => `<span>${escapeHtml(key)}：${escapeHtml(value)}</span>`).join("")}</div>
     ${sqlNotice ? `<p>${escapeHtml(sqlNotice)}</p>` : ""}${renderSqlPanel(sql, detail.contract || {})}`;
   const parameterInputs = Object.entries(queryParams).map(([key, value]) => `<label><span>${escapeHtml(key)}</span><input class="sql-param-input" data-param-key="${escapeHtml(key)}" data-param-type="${typeof value}" value="${escapeHtml(value)}" autocomplete="off"></label>`).join("");
   const recheckSql = sql.executed_sql || sql.sql_template || (detail.contract || {}).sql_template || "";
@@ -492,7 +481,7 @@ async function renderCase() {
   document.getElementById("tab-logs").innerHTML = `<div class="log-columns">
     <section><h3>智能体运行</h3>${infoRows([["轮次", result.turn_index], ["回答状态", result.completion_status], ["首段回答", duration(timing.first_answer_ms)], ["完整响应", duration(timing.completed_ms)], ["传输总耗时", duration(timing.transport_total_ms ?? result.agent_latency_ms)], ["开始（北京时间）", localTime(timing.started_at)], ["结束（北京时间）", localTime(timing.finished_at)], ["重试次数", result.retries || 0]])}
     <details><summary>智能体事件与错误</summary><pre>${escapeHtml(JSON.stringify({events: resp.event_counts, error: resp.error, remote_error: resp.remote_error}, null, 2))}</pre></details></section>
-    <section><h3>SQL 查询</h3>${infoRows([["查询状态", sql.error ? "失败" : sql.columns ? "完成" : "未执行"], ["查询耗时", sql.columns && sql.source !== "golden_expected" ? duration(sql.latency_ms) : "未记录"], ["结果行数", (sql.rows || []).length], ["补查次数", rechecks.length]])}
+    <section><h3>SQL 查询</h3>${infoRows([["查询状态", sql.error ? "失败" : sql.columns ? "完成" : "未执行"], ["查询耗时", sql.columns ? duration(sql.latency_ms) : "未记录"], ["结果行数", (sql.rows || []).length], ["补查次数", rechecks.length]])}
     ${(alignment.sql_attempts || []).length ? `<details><summary>时间回退记录</summary><pre>${escapeHtml(JSON.stringify(alignment.sql_attempts, null, 2))}</pre></details>` : ""}
     </section></div>`;
   document.querySelectorAll(".tabs button").forEach(btn => btn.addEventListener("click", () => {
@@ -533,10 +522,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const page = document.querySelector("main")?.dataset.page;
   if (page === "index") {
     document.getElementById("scope").value = "sequential10";
-    document.getElementById("mode").onchange = (event) => {
-      if (event.target.value === "live") document.getElementById("scope").value = "sequential10";
-      applyCreateRunUi();
-    };
     document.getElementById("scope").onchange = applyCreateRunUi;
     applyCreateRunUi();
     document.getElementById("confirm-idle").onclick = async () => {
@@ -547,12 +532,6 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("new-run").onclick = openDialog;
     document.getElementById("cancel").onclick = closeDialog;
     document.getElementById("confirm").onclick = startRun;
-    api("/api/mock-demo").then(pack => {
-      const hint = document.getElementById("mock-hint");
-      if (hint && pack.case_ids) {
-        hint.textContent = `模拟包 ${pack.case_ids.length} 题：${(pack.correct_case_ids || []).length} 题正确，${Object.keys(pack.planted_errors || {}).length} 题植入错值或漏行。`;
-      }
-    }).catch(() => {});
     renderIndex().catch(err => {
       document.getElementById("run-list").innerHTML = `<div class="empty">无法加载：${escapeHtml(err.message)}</div>`;
     });

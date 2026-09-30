@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""统一时间上下文。所有相对时间只在批次开始时解析一次。"""
+"""统一时间上下文与 SQL 参数解析。
+
+只实现当前 141 题契约实际使用的参数解析器；相对时间只在批次开始时解析一次。
+"""
 from __future__ import annotations
 
 import hashlib
@@ -11,7 +14,6 @@ from zoneinfo import ZoneInfo
 
 from evaluator.models import RunContext
 
-SHANGHAI = ZoneInfo("Asia/Shanghai")
 # Skip SQL literals, identifiers and comments before finding bind parameters.
 SQL_TOKEN_RE = re.compile(r"--[^\n]*|/\*.*?\*/|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|\$(?:[A-Za-z_]\w*)?\$.*?\$(?:[A-Za-z_]\w*)?\$|(?<!:):[A-Za-z_]\w*", re.S)
 
@@ -87,27 +89,11 @@ def make_run_id(anchor: datetime) -> str:
     return f"{stamp}_{suffix}"
 
 
-def monday_of(d: date) -> date:
-    return d - timedelta(days=d.weekday())
-
-
-def quarter_start(d: date) -> date:
-    return date(d.year, ((d.month - 1) // 3) * 3 + 1, 1)
-
-
-def prev_quarter_range(d: date) -> Tuple[date, date]:
-    qs = quarter_start(d)
-    prev_last = qs - timedelta(days=1)
-    prev_start = date(prev_last.year, ((prev_last.month - 1) // 3) * 3 + 1, 1)
-    return prev_start, prev_last
-
-
 def build_run_context(
     anchor_time: datetime | date | str,
     *,
     timezone_name: str = "Asia/Shanghai",
     agent_name: str = "water-loss-agent",
-    contract_version: str = "v3",
     latest_periods: Optional[Dict[str, int]] = None,
     run_id: Optional[str] = None,
 ) -> RunContext:
@@ -118,21 +104,12 @@ def build_run_context(
     calendar_month = ym_of(day)
     year_latest = latest.get("SzwgBusinessYear")
     single_latest = latest.get("SzwgBusiness")
-    effective_year = year_latest if year_latest is not None and calendar_month > year_latest else calendar_month
-    if year_latest is not None:
-        effective_year = min(calendar_month, year_latest)
-    effective_single = calendar_month
-    if single_latest is not None:
-        effective_single = min(calendar_month, single_latest)
-
+    effective_year = calendar_month if year_latest is None else min(calendar_month, year_latest)
+    effective_single = calendar_month if single_latest is None else min(calendar_month, single_latest)
     last6_end = effective_year if year_latest is not None else ym_shift(calendar_month, -1)
     last6 = [ym_str(ym_shift(last6_end, i)) for i in range(-5, 1)]
-    last3_end = ym_shift(calendar_month, -1)
-    last3 = [ym_str(ym_shift(last3_end, i)) for i in range(-2, 1)]
-    last12 = [ym_str(ym_shift(calendar_month, i)) for i in range(-11, 1)]
-    pqs, pqe = prev_quarter_range(day)
 
-    ctx = RunContext(
+    return RunContext(
         run_id=run_id or make_run_id(anchor),
         anchor_time=anchor,
         timezone=timezone_name,
@@ -143,120 +120,24 @@ def build_run_context(
         current_month_end=iso(ym_last_day(calendar_month)),
         previous_month_start=iso(ym_first_day(ym_shift(calendar_month, -1))),
         previous_month_end=iso(ym_last_day(ym_shift(calendar_month, -1))),
-        last_7_start=iso(day - timedelta(days=6)),
-        last_7_end=iso(day),
-        last_30_start=iso(day - timedelta(days=29)),
-        last_30_end=iso(day),
         year_start=iso(date(day.year, 1, 1)),
         today=iso(day),
         yesterday=iso(day - timedelta(days=1)),
-        week_start=iso(monday_of(day)),
-        jan_may_period=ym_str(day.year * 100 + 5),
         yoy_month=ym_str(ym_shift(effective_year, -12)),
         last_6_months=last6,
-        last_3_months=last3,
-        last_12_months=last12,
-        quarter_start=iso(quarter_start(day)),
-        prev_quarter_start=iso(pqs),
-        prev_quarter_end=iso(pqe),
         effective_single_month=ym_str(effective_single),
         effective_year_month=ym_str(effective_year),
         agent_name=agent_name,
-        contract_version=contract_version,
         latest_periods=latest,
-        bind_params={},
     )
-    ctx.bind_params = flatten_bind_params(ctx)
-    return ctx
-
-
-def flatten_bind_params(ctx: RunContext) -> Dict[str, Any]:
-    params: Dict[str, Any] = {
-        "period": int(ctx.effective_single_month),
-        "period_year": int(ctx.effective_year_month),
-        "period_prev": int(ctx.previous_month),
-        "period_yoy": int(ctx.yoy_month),
-        "period_jan_may": int(ctx.jan_may_period),
-        "current_month": int(ctx.current_month),
-        "start_date": ctx.current_month_start,
-        "end_date": ctx.current_month_end,
-        "month_start": ctx.current_month_start,
-        "month_end": ctx.current_month_end,
-        "next_month_start": ctx.next_month_start,
-        "prev_month_start": ctx.previous_month_start,
-        "prev_month_end": ctx.previous_month_end,
-        "last_7_start": ctx.last_7_start,
-        "last_7_end": ctx.last_7_end,
-        "last_30_start": ctx.last_30_start,
-        "last_30_end": ctx.last_30_end,
-        "year_start": ctx.year_start,
-        "today": ctx.today,
-        "yesterday": ctx.yesterday,
-        "week_start": ctx.week_start,
-        "quarter_start": ctx.quarter_start,
-        "prev_quarter_start": ctx.prev_quarter_start,
-        "prev_quarter_end": ctx.prev_quarter_end,
-        "as_of_date": ctx.today,
-        "date_start": ctx.current_month_start,
-        "date_end": ctx.next_month_start,
-    }
-    for index, ym in enumerate(ctx.last_6_months):
-        params[f"period_{index}"] = int(ym)
-    for index, ym in enumerate(ctx.last_3_months):
-        start = ym_first_day(int(ym))
-        end = ym_last_day(int(ym))
-        params[f"m{index}_start"] = iso(start)
-        params[f"m{index}_end"] = iso(end)
-        params[f"m{index}_period"] = int(ym)
-    if ctx.last_12_months:
-        first = int(ctx.last_12_months[0])
-        last = int(ctx.last_12_months[-1])
-        params["y12_start"] = iso(ym_first_day(first))
-        params["y12_end"] = iso(ym_last_day(last))
-    return params
-
-
-RESOLVER_PARAM_KEYS = {
-    "none": [],
-    "single_month": ["period"],
-    "previous_month": ["period"],
-    "year_month": ["period"],
-    "jan_may": ["period"],
-    "last_6_months": [f"period_{i}" for i in range(6)],
-    "yoy_mom": ["period", "period_yoy", "period_prev"],
-    "month_range": ["period", "start_date", "end_date", "next_month_start"],
-    "prev_month_range": ["period", "start_date", "end_date"],
-    "last_7_days": ["start_date", "end_date"],
-    "last_30_days": ["start_date", "end_date"],
-    "date_range": ["start_date", "end_date"],
-    "as_of_date": ["as_of_date"],
-    "current_prev_month": ["period", "period_prev", "start_date", "end_date", "next_month_start"],
-    "quarter_vs_prev": ["start_date", "end_date", "prev_quarter_start", "prev_quarter_end"],
-    "last_3_months": ["m0_start", "m0_end", "m1_start", "m1_end", "m2_start", "m2_end"],
-    "last_12_months": ["y12_start", "y12_end"],
-    "today_week_month": ["today", "week_start", "start_date", "end_date"],
-    "month_to_cutoff": ["start_date", "end_date", "as_of_date"],
-    "ytd_and_last_month": ["period", "period_prev", "year_start"],
-    "h1": ["period"],
-    "jan_jun": [f"period_{i}" for i in range(6)],
-    "jan_may_series": [f"period_{i}" for i in range(5)],
-    "may_jul_range": ["start_date", "end_date"],
-    "ytd_range": ["year_start", "start_date", "end_date", "as_of_date"],
-    "yesterday": ["start_date", "end_date", "as_of_date"],
-    "fixed_202606": ["period", "start_date", "end_date", "as_of_date"],
-    "single_mom": ["period", "period_prev"],
-}
 
 
 def params_for_resolver(ctx: RunContext, resolver: str) -> Dict[str, Any]:
-    """只返回白名单解析器生成的参数，禁止把模型文本拼进 SQL。"""
+    """按契约声明的解析器生成参数；未知解析器直接报错，禁止静默兜底。"""
     if resolver in {"none", "unresolved"}:
         return {}
-    bind = ctx.bind_params or flatten_bind_params(ctx)
     if resolver == "single_month":
         return {"period": int(ctx.effective_single_month)}
-    if resolver == "previous_month":
-        return {"period": int(ctx.previous_month), "start_date": ctx.previous_month_start, "end_date": ctx.previous_month_end}
     if resolver == "year_month":
         period = int(ctx.effective_year_month)
         return {
@@ -266,18 +147,8 @@ def params_for_resolver(ctx: RunContext, resolver: str) -> Dict[str, Any]:
             "start_date": iso(ym_first_day(period)),
             "end_date": iso(ym_last_day(period)),
         }
-    if resolver == "jan_may":
-        return {"period": int(ctx.jan_may_period)}
     if resolver == "last_6_months":
-        out = {f"period_{i}": int(ym) for i, ym in enumerate(ctx.last_6_months)}
-        if ctx.last_6_months:
-            first = int(ctx.last_6_months[0])
-            last = int(ctx.last_6_months[-1])
-            out["start_date"] = iso(ym_first_day(first))
-            out["end_date"] = iso(ym_first_day(ym_shift(last, 1)))
-            for i, ym in enumerate(ctx.last_6_months):
-                out[f"date_{i}"] = iso(ym_last_day(int(ym)))
-        return out
+        return {f"period_{i}": int(ym) for i, ym in enumerate(ctx.last_6_months)}
     if resolver == "yoy_mom":
         period = int(ctx.effective_year_month)
         return {
@@ -297,7 +168,6 @@ def params_for_resolver(ctx: RunContext, resolver: str) -> Dict[str, Any]:
             "end_date": ctx.current_month_end,
             "next_month_start": ctx.next_month_start,
             "prev_month_start": ctx.previous_month_start,
-            "prev_month_end": ctx.previous_month_end,
             "year_start": ctx.year_start,
         }
     if resolver == "prev_month_range":
@@ -307,62 +177,8 @@ def params_for_resolver(ctx: RunContext, resolver: str) -> Dict[str, Any]:
             "end_date": ctx.previous_month_end,
             "next_month_start": ctx.current_month_start,
         }
-    if resolver == "last_7_days":
-        return {"start_date": ctx.last_7_start, "end_date": ctx.last_7_end}
-    if resolver == "last_30_days":
-        return {"start_date": ctx.last_30_start, "end_date": ctx.last_30_end}
-    if resolver == "date_range":
-        return {"start_date": ctx.current_month_start, "end_date": ctx.next_month_start}
     if resolver == "as_of_date":
         return {"as_of_date": ctx.today}
-    if resolver == "current_prev_month":
-        prev_prev = ym_shift(int(ctx.previous_month), -1)
-        return {
-            "period": int(ctx.previous_month),
-            "period_prev": prev_prev,
-            "start_date": ctx.previous_month_start,
-            "end_date": ctx.current_month_start,
-            "next_month_start": ctx.current_month_start,
-            "prev_month_start": iso(ym_first_day(prev_prev)),
-            "prev_month_end": iso(ym_last_day(prev_prev)),
-            "prev_next_start": ctx.previous_month_start,
-        }
-    if resolver == "quarter_vs_prev":
-        return {
-            "start_date": ctx.quarter_start,
-            "end_date": ctx.today,
-            "prev_quarter_start": ctx.prev_quarter_start,
-            "prev_quarter_end": ctx.prev_quarter_end,
-        }
-    if resolver == "last_3_months":
-        out = {}
-        for i, ym in enumerate(ctx.last_3_months):
-            out[f"m{i}_start"] = iso(ym_first_day(int(ym)))
-            out[f"m{i}_end"] = iso(ym_last_day(int(ym)))
-        return out
-    if resolver == "last_12_months":
-        first = int(ctx.last_12_months[0])
-        last = int(ctx.last_12_months[-1])
-        return {"y12_start": iso(ym_first_day(first)), "y12_end": iso(ym_last_day(last))}
-    if resolver == "today_week_month":
-        return {
-            "today": ctx.today,
-            "week_start": ctx.week_start,
-            "start_date": ctx.previous_month_start,
-            "end_date": ctx.previous_month_end,
-        }
-    if resolver == "month_to_cutoff":
-        return {
-            "start_date": ctx.previous_month_start,
-            "end_date": ctx.current_month_start,
-            "as_of_date": iso(date.fromisoformat(ctx.today) - timedelta(days=10)),
-        }
-    if resolver == "ytd_and_last_month":
-        return {
-            "period": int(ctx.effective_year_month),
-            "period_prev": int(ctx.previous_month),
-            "year_start": ctx.year_start,
-        }
     day = date.fromisoformat(ctx.today)
     if resolver == "h1":
         return {"period": day.year * 100 + 6}
@@ -382,7 +198,6 @@ def params_for_resolver(ctx: RunContext, resolver: str) -> Dict[str, Any]:
             "year_start": ctx.year_start,
             "start_date": ctx.year_start,
             "end_date": end,
-            "date_end": end,
             "next_month_start": end,
             "as_of_date": ctx.today,
         }
@@ -403,28 +218,9 @@ def params_for_resolver(ctx: RunContext, resolver: str) -> Dict[str, Any]:
     if resolver == "single_mom":
         period = int(ctx.effective_single_month)
         return {"period": period, "period_prev": ym_shift(period, -1)}
-    keys = RESOLVER_PARAM_KEYS.get(resolver, [])
-    return {k: bind[k] for k in keys if k in bind}
+    raise ValueError(f"未知参数解析器: {resolver}")
 
 
-def normalize_sql(sql: str) -> str:
-    text = re.sub(r"'(\d{4}-\d{2}-\d{2})[ T]\d{2}:\d{2}:\d{2}'", r"'\1'", sql or "")
-    text = re.sub(r"\s+", " ", text).strip()
-    text = text.replace("( ", "(").replace(" )", ")")
-    text = re.sub(r",\s*", ",", text)
-    return text.lower()
-
-
-def replace_literal(sql: str, old: str, placeholder: str) -> str:
-    if not old or old in placeholder:
-        return sql
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", old):
-        sql = re.sub(rf"'{re.escape(old)}(?:[ T]\d{{2}}:\d{{2}}:\d{{2}})?'", placeholder, sql)
-        sql = re.sub(rf"(?<![:\d]){re.escape(old)}(?![:\d])", placeholder, sql)
-        return sql
-    if re.fullmatch(r"\d{8}", old) or re.fullmatch(r"\d{6}", old):
-        return re.sub(rf"(?<!\d){re.escape(old)}(?!\d)", placeholder, sql)
-    return sql.replace(old, placeholder)
 
 
 def template_params(template: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -434,7 +230,7 @@ def template_params(template: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def preview_sql(template: str, params: Dict[str, Any]) -> str:
-    """把命名参数替换为字面量，仅用于日志预览和历史等价回归。"""
+    """把命名参数替换为字面量，仅用于日志预览。"""
     def render(name, quoted):
         if name not in params:
             return f"':{name}'" if quoted else f":{name}"

@@ -151,7 +151,7 @@ def test_manual_qualified_makes_unevaluable_count(tmp_path):
     assert metrics["case_judgments"]["C"]["auto_verdict"] == "UNEVALUABLE"
 
 
-def test_legacy_claims_are_ignored_without_llm_evaluation(tmp_path):
+def test_claims_are_ignored_without_llm_evaluation(tmp_path):
     repo = Repo()
     repo.cases = [{"case_id": "A", "status": "PASS", "completion_status": "completed"}]
     repo.runs_dir = tmp_path

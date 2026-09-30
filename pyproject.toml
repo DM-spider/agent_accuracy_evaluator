@@ -15,6 +15,7 @@ dependencies = [
     "openpyxl>=3.1",
     "pg8000>=1.30",
     "tomli>=2.0; python_version < '3.11'",
+    "psycopg2-binary>=2.9",
 ]
 
 [project.optional-dependencies]

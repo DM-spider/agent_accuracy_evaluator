@@ -20,8 +20,6 @@ CREATE TABLE IF NOT EXISTS evaluation_runs (
     anchor_time TEXT,
     timezone TEXT,
     agent_name TEXT,
-    contract_version TEXT,
-    mode TEXT,
     summary_json TEXT,
     created_at TEXT,
     consistency_threshold REAL DEFAULT 0.6
@@ -111,8 +109,8 @@ class Repository:
             conn.execute(
                 """INSERT OR REPLACE INTO evaluation_runs
                 (run_id, status, started_at, finished_at, anchor_time, timezone, agent_name,
-                 contract_version, mode, summary_json, created_at, consistency_threshold)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 summary_json, created_at, consistency_threshold)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     summary.run_id,
                     summary.status.value,
@@ -121,8 +119,6 @@ class Repository:
                     summary.anchor_time,
                     summary.timezone,
                     summary.agent_name,
-                    summary.contract_version,
-                    summary.mode,
                     summary.model_dump_json(),
                     _now(),
                     summary.consistency_threshold,
@@ -135,7 +131,7 @@ class Repository:
     def list_runs(self) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT run_id, status, started_at, finished_at, agent_name, mode, summary_json, consistency_threshold FROM evaluation_runs ORDER BY created_at DESC"
+                "SELECT run_id, status, started_at, finished_at, agent_name, summary_json, consistency_threshold FROM evaluation_runs ORDER BY created_at DESC"
             ).fetchall()
         out = []
         for row in rows:
@@ -206,7 +202,7 @@ class Repository:
                 previous = json.loads(path.read_text(encoding="utf-8"))
             except ValueError:
                 previous = {}
-            evaluation_id = f"{case_id}-{previous.get('input_hash') or 'legacy'}-{previous.get('created_at') or _now()}"
+            evaluation_id = f"{case_id}-{previous.get('input_hash') or 'unknown'}-{previous.get('created_at') or _now()}"
             evaluation_id = evaluation_id.replace(":", "").replace(" ", "_").replace("/", "_").replace("+", "_")[:120]
             history_dir = self.run_dir(run_id) / "llm_evaluations"
             history_dir.mkdir(parents=True, exist_ok=True)

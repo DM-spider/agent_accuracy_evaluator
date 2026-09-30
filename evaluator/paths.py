@@ -16,7 +16,7 @@ _GOLDEN_DIR_OVERRIDE: Optional[Path] = None
 
 
 def configure_paths(settings: Optional[Dict[str, Any]]) -> None:
-    """bootstrap 时按 settings.paths 固定运行目录，不支持环境变量覆盖。"""
+    """bootstrap 时按 settings.paths 固定运行目录。"""
     global _RUNTIME_DIR_OVERRIDE, _GOLDEN_DIR_OVERRIDE
     paths = (settings or {}).get("paths") or {}
     runtime = str(paths.get("runtime_dir") or "").strip()

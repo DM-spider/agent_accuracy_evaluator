@@ -1,6 +1,6 @@
 """Derived run metrics from the single LLM evaluation result.
 
-不再导入旧规则比较；题目结论与七维诊断均来自持久化的 llm_evaluation.json。
+题目结论与七维诊断均来自持久化的 llm_evaluation.json。
 """
 from __future__ import annotations
 
@@ -137,7 +137,7 @@ def run_evaluation_metrics(repo, run_id, contracts):
     return metrics
 
 
-V3_CATEGORIES = {
+CATEGORY_LABELS = {
     "CX": "产销差专题",
     "LS": "漏损率专题",
     "DMA": "小区DMA专题",
@@ -148,14 +148,14 @@ V3_CATEGORIES = {
 
 def _category_key(case_id):
     prefix = str(case_id or "").split("-")[0]
-    return prefix if prefix in V3_CATEGORIES else "other"
+    return prefix if prefix in CATEGORY_LABELS else "other"
 
 
 def _category_pass_rate(cases, case_judgments):
     buckets = {}
     for case in cases:
         key = _category_key(case.get("case_id"))
-        bucket = buckets.setdefault(key, {"total": 0, "qualified": 0, "label": V3_CATEGORIES.get(key, "其他")})
+        bucket = buckets.setdefault(key, {"total": 0, "qualified": 0, "label": CATEGORY_LABELS.get(key, "其他")})
         bucket["total"] += 1
         if (case_judgments.get(case["case_id"]) or {}).get("qualified"):
             bucket["qualified"] += 1

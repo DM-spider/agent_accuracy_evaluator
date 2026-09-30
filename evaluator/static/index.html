@@ -24,17 +24,12 @@
   <div class="dialog-backdrop" id="dialog">
     <div class="dialog">
       <h2>新建测评</h2>
-      <label>模式</label>
-      <select id="mode">
-        <option value="mock_mixed">模拟 20 题</option>
-        <option value="live">实时调用智能体与数据库</option>
-      </select>
-      <p class="kicker" id="mock-hint" style="margin:8px 0 0">模拟包固定 20 题：10 题正确，10 题错值或漏行。</p>
-      <div id="scope-fields" hidden>
+      <div id="scope-fields">
         <label>题目范围</label>
         <select id="scope">
           <option value="sequential10">顺序 10 题</option>
           <option value="random10">随机 10 题</option>
+          <option value="verified">业务核对题</option>
           <option value="custom">指定题号</option>
           <option value="all">全部</option>
         </select>
@@ -43,7 +38,7 @@
           <input id="case-ids" placeholder="CX-001, LS-001, DMA-001">
         </div>
       </div>
-      <label>基准时间（实时：当前时间；模拟：黄金集时间）</label>
+      <label>基准时间（实时批次固定用当前时间，不可指定）</label>
       <input id="anchor" placeholder="2026-08-17T10:00:00+08:00">
       <label>智能体名称</label>
       <input id="agent-name" value="water-loss-agent">

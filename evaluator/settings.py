@@ -26,7 +26,7 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 def load_settings(path: Path | None = None) -> Dict[str, Any]:
     """先读示例配置作为默认值，再用显式路径或本机 settings.toml 覆盖。
 
-    只接受显式文件路径依赖注入；不支持环境变量覆盖生产配置。
+    只接受显式文件路径依赖注入。
     """
     example = CONFIG_DIR / "settings.example.toml"
     settings: Dict[str, Any] = {}
@@ -46,8 +46,8 @@ def load_settings(path: Path | None = None) -> Dict[str, Any]:
             settings = _deep_merge(settings, tomllib.loads(candidate.read_text(encoding="utf-8")))
             break
     platform = settings.get("platform") or {}
-    legacy = {"session_id", "task_id", "template_id", "org_id", "task_name", "login_session_env", "_login_session"}
-    if legacy.intersection(platform):
+    unsupported = {"session_id", "task_id", "template_id", "org_id", "task_name", "login_session_env", "_login_session"}
+    if unsupported.intersection(platform):
         raise ValueError("请移除 platform 下的旧会话和凭证字段，仅在 platform.curl 中粘贴完整 Bash cURL")
     curl = platform.pop("curl", "")
     if not isinstance(curl, str):

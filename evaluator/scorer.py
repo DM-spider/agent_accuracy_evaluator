@@ -51,7 +51,7 @@ def score_case(
     *,
     not_scored_reason: Optional[str] = None,
 ) -> CaseResult:
-    """构造非数值题与执行失败题的结果；正常数值题不再走本函数。"""
+    """构造非数值题与执行失败题的结果。"""
     if not contract.numeric_evaluable:
         return CaseResult(
             case_id=contract.case_id,
@@ -112,7 +112,6 @@ def score_run(
     timezone_name: str = "Asia/Shanghai",
     watermark_stable: bool = True,
     status: RunStatus = RunStatus.COMPLETED,
-    mode: str = "live",
     consistency_threshold: float = 0.6,
 ) -> RunSummary:
     scored = [r for r in results if r.status not in {CaseStatus.NOT_SCORED, CaseStatus.REVIEW}]
@@ -167,7 +166,6 @@ def score_run(
         by_error_type=dict(by_error),
         progress_done=len(results),
         progress_total=len(results),
-        mode=mode,
         consistency_threshold=consistency_threshold,
         timing_summary={
             "completed_agent_count": sum(r.completion_status == "completed" for r in results),

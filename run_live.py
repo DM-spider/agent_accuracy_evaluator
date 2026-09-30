@@ -14,7 +14,7 @@ def main():
     args = parser.parse_args()
     st = bootstrap()
     try:
-        created = create_run(CreateRunBody(mode="live", case_ids=args.cases.split(",") if args.cases else None))
+        created = create_run(CreateRunBody(case_ids=args.cases.split(",") if args.cases else None))
     except HTTPException as exc:
         print(json.dumps(exc.detail, ensure_ascii=False))
         return 2

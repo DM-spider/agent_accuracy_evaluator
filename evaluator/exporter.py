@@ -191,7 +191,7 @@ th {{ background:#0e6b63; color:#fff; }}
 .cards span {{ display:inline-block; margin:8px 16px 16px 0; padding:12px 16px; background:#fff; border:1px solid #d7cbb8; }}
 </style></head><body>
 <h1>智能体数值准确性测评报告</h1>
-<p>运行 {escape(run_id)} · 状态 {escape(str(summary.get("status") or run.get("status")))} · 模式 {escape(str(summary.get("mode")))}</p>
+<p>运行 {escape(run_id)} · 状态 {escape(str(summary.get("status") or run.get("status")))}</p>
 <div class="cards">
 <span>题目通过率 {rate((summary.get("headline_metrics") or {}).get("pass_rate", summary.get("case_pass_rate")))}</span>
 <span>准确率 {rate((summary.get("headline_metrics") or {}).get("accuracy", summary.get("numeric_accuracy")))}</span>

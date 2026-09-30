@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""单位与数值归一。不做无契约的单位猜测。"""
+"""单位与数值归一：只按契约声明的单位与容差换算。"""
 from __future__ import annotations
 
 import re
@@ -81,7 +81,7 @@ def parse_number(
     unit = spec.unit if spec else ""
     scale = spec.value_scale if spec else "volume"
     _, factor = conversion_meta(text, spec)
-    # 文本自带单位词（%/‰/pp/个百分点）说明值已是业务读数，ratio01 不再放大
+    # 文本自带单位词（%/‰/pp/个百分点）说明值已是业务读数，ratio01 不放大
     unit_word = bool(re.search(r"[%％‰]", text) or "pp" in text.lower() or "个百分点" in text)
     if factor:
         value *= factor

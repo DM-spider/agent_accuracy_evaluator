@@ -62,7 +62,7 @@ def params_for_period(contract: CaseContract, context: RunContext, period: int):
     return params
 
 
-MULTI_PERIOD_RESOLVERS = {"last_6_months", "last_3_months", "last_12_months"}
+MULTI_PERIOD_RESOLVERS = {"last_6_months"}
 MOM_RESOLVERS = {"single_mom", "yoy_mom"}
 
 

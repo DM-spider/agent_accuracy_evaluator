@@ -9,11 +9,11 @@ def test_percent_and_ratio_and_volume():
     volume = MeasureSpec(label="漏损水量", unit="m³", value_scale="volume", tolerance=Tolerance(kind="rel", eps=0.001))
     v1, u1, e1 = parse_number("11.84%", percent)
     v2, u2, e2 = parse_number("11.8400", percent)
-    v3, u3, e3 = parse_number("0.1184", ratio)
+    v_ratio, u_ratio, e_ratio = parse_number("0.1184", ratio)
     assert e1 is None and abs(v1 - 11.84) < 1e-9
     assert parse_number("11.84％", percent)[0] == 11.84
     assert abs(v2 - 11.84) < 1e-9
-    assert abs(v3 - 11.84) < 1e-9
+    assert abs(v_ratio - 11.84) < 1e-9
     w1, _, _ = parse_number("2.3万方", volume)
     w2, _, _ = parse_number("23,000 m³", volume)
     w3, u3, _ = parse_number("102,857 万立方米", volume)
@@ -47,7 +47,7 @@ def test_count_exact_integer():
 
 
 def test_ratio01_sql_side_is_deterministically_scaled():
-    # v3 契约：SQL 原始值是 0-1 比值（黄金集同源），评测端按声明语义 ×100，不靠量级猜测
+    # 标准集契约：SQL 原始值是 0-1 比值（黄金集同源），评测端按声明语义 ×100，不靠量级猜测
     spec = MeasureSpec(label="产销差率", unit="%", value_scale="ratio01")
     v, u, err = parse_number("0.1184", spec, "sql")
     assert err is None and u == "%" and abs(v - 11.84) < 1e-9
@@ -64,7 +64,7 @@ def test_ratio01_agent_side_respects_unit_words_and_magnitude():
     assert parse_number("0.125", spec, "agent")[0] == 12.5   # 裸小数 ×100
     assert parse_number("12.5", spec, "agent")[0] == 12.5    # 裸数>1 视为已是百分数读数
     assert parse_number("12.5%", spec, "agent")[0] == 12.5   # 带%不放大
-    assert parse_number("0.5‰", spec, "agent")[0] == 0.05    # ‰ 已换算，不再 ×100
+    assert parse_number("0.5‰", spec, "agent")[0] == 0.05    # ‰ 已换算为比值
 
 
 def test_ratio01_pp_contract_lands_in_pp_space():
