@@ -17,9 +17,9 @@ port = 5432
 name = "example_db"
 user = ""
 password = ""
-timeout_seconds = 30
-# ODPS 等外部表单条查询可能有数十秒启动开销，按实际调大 timeout_seconds；
-# connect_timeout 只用于建连，不会提前掐断查询。
+timeout_seconds = 600
+# ODPS 等外部表单条查询是远程作业，实测单次约两分钟，按实际调大 timeout_seconds；
+# 与 golden_builder 的 600 秒预算保持一致。connect_timeout 只用于建连，不会提前掐断查询。
 max_rows = 5000
 connect_timeout = 15
 
@@ -68,6 +68,6 @@ prompt_version = "v1"
 curl = '''
 '''
 enabled = true
-read_timeout_seconds = 60
-total_timeout_seconds = 300
+read_timeout_seconds = 180
+total_timeout_seconds = 600
 trust_env = false

@@ -2,6 +2,7 @@
 from decimal import Decimal
 
 from evaluator.sql_executor import SqlExecutor, SqlGuardError, normalize_sql_cell, validate_sql
+from evaluator.sql_executor import _public_error
 
 
 def test_allows_select_and_cte():
@@ -116,3 +117,10 @@ def test_normalize_sql_cell_rounds_and_keeps_period_int():
     assert normalize_sql_cell("supply", "157439172.490000000000000000") == 157439172.4900
     assert normalize_sql_cell("月份(期数)", Decimal("202608.000000000000000000")) == 202608
     assert normalize_sql_cell("cnt", 13) == 13
+
+
+def test_database_error_reports_message_not_internal_dictionary():
+    """pg8000 的 str(exc) 是整段字典；展示层只该看到可读消息。"""
+    exc = Exception({"S": "ERROR", "C": "42P01", "M": 'relation "x" does not exist', "F": "parse_relation.c", "L": "1212"})
+    assert _public_error(exc) == 'relation "x" does not exist'
+    assert _public_error(TimeoutError("timed out")) == "timed out"

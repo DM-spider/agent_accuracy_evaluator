@@ -3,8 +3,12 @@ import json
 import re
 import shlex
 from http.cookies import SimpleCookie
+from urllib.parse import urlsplit
 
-STREAM_URL = "https://aiemployee.sz-water.com.cn/cc-control/api/user/mid-platform/session/message/stream"
+# 域名白名单：只允许把登录凭证发往已知的业务平台，防止误粘贴外站 cURL 泄露会话。
+STREAM_HOSTS = {"assistant.sz-water.com.cn"}
+STREAM_PATH = "/cc-control/api/user/mid-platform/session/message/stream"
+STREAM_URL = "https://assistant.sz-water.com.cn" + STREAM_PATH
 
 
 def parse_platform_curl(command):
@@ -45,6 +49,10 @@ def parse_platform_curl(command):
                 if url is not None:
                     raise ValueError("platform.curl 只能包含一个网址")
                 url = value
+            elif token in {"-A", "--user-agent"}:
+                headers.setdefault("user-agent", value)
+            elif token in {"-e", "--referer"}:
+                headers.setdefault("referer", value)
             elif token in {"-X", "--request"} and value.upper() != "POST":
                 raise ValueError("platform.curl 必须是发送消息的 POST 请求")
         elif token.startswith(("https://", "[https://")) and url is None:
@@ -54,8 +62,9 @@ def parse_platform_curl(command):
     link = re.fullmatch(r"\[(https://[^\]]+)\]\(\1\)", url or "")
     if link:
         url = link.group(1)
-    if url != STREAM_URL:
-        raise ValueError("platform.curl 必须使用 message/stream 消息接口")
+    parts = urlsplit(url or "")
+    if parts.scheme != "https" or parts.hostname not in STREAM_HOSTS or parts.path != STREAM_PATH:
+        raise ValueError("platform.curl 必须使用已知业务平台的 message/stream 消息接口")
     try:
         payload = json.loads(body or "")
     except (TypeError, ValueError):
@@ -68,6 +77,9 @@ def parse_platform_curl(command):
         if not isinstance(value, str) or not value.strip():
             raise ValueError("platform.curl 请求体缺少 " + source)
         result[key] = value.strip()
+    # 平台除会话语境外还要求 modelCode 等字段，逐字段白名单会让平台新增必填项时静默丢字段。
+    # 这里整体保留浏览器请求体（只去掉会由测评题目替换的 message），发送时再覆盖。
+    result["payload"] = {key: value for key, value in payload.items() if key != "message"}
     result["org_id"] = headers.get("x-org-id", "")
     if not result["org_id"]:
         raise ValueError("platform.curl 缺少 x-org-id 请求头")
@@ -87,4 +99,9 @@ def parse_platform_curl(command):
     if not cookie_values[0] or any(c in cookie_values[0] for c in "\r\n;"):
         raise ValueError("platform.curl 登录凭证格式不正确")
     result["_login_session"] = cookie_values[0]
+    # 地址与同源头以粘贴的 cURL 为准，换域名或换工作台只需重新粘贴，不用改代码。
+    site = f"{parts.scheme}://{parts.netloc}"
+    result["url"] = url
+    result["origin"] = headers.get("origin") or site
+    result["referer"] = headers.get("referer") or site + "/"
     return result

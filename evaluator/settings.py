@@ -46,9 +46,10 @@ def load_settings(path: Path | None = None) -> Dict[str, Any]:
             settings = _deep_merge(settings, tomllib.loads(candidate.read_text(encoding="utf-8")))
             break
     platform = settings.get("platform") or {}
-    unsupported = {"session_id", "task_id", "template_id", "org_id", "task_name", "login_session_env", "_login_session"}
+    unsupported = {"session_id", "task_id", "template_id", "org_id", "task_name", "login_session_env", "_login_session",
+                   "url", "origin", "referer", "payload"}
     if unsupported.intersection(platform):
-        raise ValueError("请移除 platform 下的旧会话和凭证字段，仅在 platform.curl 中粘贴完整 Bash cURL")
+        raise ValueError("请移除 platform 下的会话、凭证和地址字段，仅在 platform.curl 中粘贴完整 Bash cURL")
     curl = platform.pop("curl", "")
     if not isinstance(curl, str):
         raise ValueError("platform.curl 必须是三单引号包裹的多行文本")

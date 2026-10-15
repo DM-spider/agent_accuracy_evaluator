@@ -9,20 +9,22 @@ from pathlib import Path
 
 import httpx
 
-
-URL = "https://aiemployee.sz-water.com.cn/cc-control/api/user/mid-platform/session/message/stream"
+from evaluator.curl_config import STREAM_URL
 
 
 def _platform_default(name: str) -> str:
+    value = _platform_raw(name)
+    return "leakage-skill" if (name == "task_name" and not value) else str(value or "")
+
+
+def _platform_raw(name: str):
     from evaluator.settings import load_settings, platform_login_session
 
     settings = load_settings()
     platform = settings.get("platform") or {}
     if name == "login_session":
         return platform_login_session(settings)
-    if name == "task_name":
-        return platform.get("task_name") or "leakage-skill"
-    return str(platform.get(name) or "")
+    return platform.get(name)
 
 
 def main() -> int:
@@ -37,30 +39,32 @@ def main() -> int:
     credential = _platform_default("login_session")
     if not credential:
         parser.error("请在 config/settings.toml 的 platform.curl 中配置登录会话")
-    body = {
+    url = _platform_default("url") or STREAM_URL
+    body = dict(_platform_raw("payload") or {})
+    body.update({
         "sessionId": args.session_id,
         "taskId": args.task_id,
         "message": args.message,
         "taskName": args.task_name,
         "templateId": args.template_id,
-    }
+    })
     headers = {
         "accept": "*/*",
         "x-org-id": args.org_id,
         "x-session-id": credential,
         "Cookie": "SESSION_ID=" + credential,
-        "origin": "https://aiemployee.sz-water.com.cn",
-        "referer": "https://aiemployee.sz-water.com.cn/workspace/",
+        "origin": _platform_default("origin"),
+        "referer": _platform_default("referer"),
     }
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     output_dir = Path(__file__).resolve().parent / "runtime" / "protocol_probes" / stamp
     output_dir.mkdir(parents=True)
-    meta = {"url": URL, "request": body, "started_at": datetime.now(timezone.utc).isoformat()}
+    meta = {"url": url, "request": body, "started_at": datetime.now(timezone.utc).isoformat()}
     started = time.perf_counter()
     pieces = []
     try:
         with httpx.Client(timeout=httpx.Timeout(30, connect=15), follow_redirects=False) as client:
-            with client.stream("POST", URL, json=body, headers=headers) as response:
+            with client.stream("POST", url, json=body, headers=headers) as response:
                 meta["http_status"] = response.status_code
                 meta["content_type"] = response.headers.get("content-type", "")
                 meta["headers_ms"] = round((time.perf_counter() - started) * 1000, 1)

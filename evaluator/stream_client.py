@@ -8,13 +8,19 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Iterable
+from urllib.parse import urlsplit
 
 import httpx
 
+from evaluator.curl_config import STREAM_URL
 from evaluator.models import AgentAnswer, CaseContract, RunContext
 
-STREAM_URL = "https://aiemployee.sz-water.com.cn/cc-control/api/user/mid-platform/session/message/stream"
 TIME_KEYS = {"period", "businessyearmonth", "yearmonth", "ym", "start_date", "end_date", "date_start", "date_end"}
+
+
+def site_origin(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}" if parts.netloc else ""
 
 
 def sse_frames(lines: Iterable[str]):
@@ -99,8 +105,14 @@ class StreamAgentClient:
 
     def __init__(self, *, session_id: str, task_id: str, template_id: str, org_id: str,
                  login_session: str, task_name: str = "leakage-skill", url: str = STREAM_URL,
+                 origin: str = "", referer: str = "", payload: dict | None = None,
                  read_timeout: float = 60, total_timeout: float = 300, trust_env: bool = False, transport=None):
-        self.url = url
+        self.url = url or STREAM_URL
+        # 同源头随地址走：平台换域名时这里自动跟随，避免 Origin/Referer 与目标站点不一致被拒。
+        site = site_origin(self.url)
+        self.origin = origin or site
+        self.referer = referer or (site + "/" if site else "")
+        self.payload = dict(payload or {})
         self.session_id = session_id
         self.task_id = task_id
         self.template_id = template_id
@@ -128,13 +140,13 @@ class StreamAgentClient:
             answer.error = "PLATFORM_NOT_CONFIGURED"
             answer.completion_status = "not_sent"
             return answer
-        body = dict(sessionId=self.session_id, taskId=self.task_id, templateId=self.template_id,
+        body = dict(self.payload)
+        body.update(sessionId=self.session_id, taskId=self.task_id, templateId=self.template_id,
                     taskName=self.task_name, message=case.question)
         answer.request_body = body
         headers = {"accept": "text/event-stream", "Cookie": f"SESSION_ID={self.login_session}",
                    "x-session-id": self.login_session, "x-org-id": self.org_id,
-                   "origin": "https://aiemployee.sz-water.com.cn",
-                   "referer": "https://aiemployee.sz-water.com.cn/workspace/"}
+                   "origin": self.origin, "referer": self.referer}
         started = time.perf_counter()
         elapsed = lambda: round((time.perf_counter() - started) * 1000, 2)
         timings = dict(started_at=datetime.now(timezone.utc).isoformat(), headers_ms=None,

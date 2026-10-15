@@ -127,11 +127,17 @@ function renderSqlPanel(sql, contract) {
   return `<div class="sql-layout"><section><h3>SQL 模板</h3><pre class="sql-code">${escapeHtml(template || "无")}</pre>
     </section>
     <section><h3>绑定参数</h3><pre>${escapeHtml(JSON.stringify(sql.params || {}, null, 2))}</pre></section></div>
-    ${sql.error ? `<h3>查询错误</h3><pre>${escapeHtml(sql.error)}</pre>` : ""}`;
+    ${sql.error ? `<h3>查询错误</h3><pre>${escapeHtml(errorText(sql.error))}</pre>` : ""}`;
 }
 
 function infoRows(entries) {
   return `<dl class="info-rows">${entries.map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value ?? "未记录")}</dd></div>`).join("")}</dl>`;
+}
+
+// psycopg/pg8000 的错误是字典（M 是消息），直接 escapeHtml 只会得到 [object Object]。
+function errorText(value) {
+  if (!value || typeof value !== "object") return value;
+  return value.M || value.message || JSON.stringify(value);
 }
 
 function formatSqlValue(value) {
@@ -171,36 +177,106 @@ function sqlTable(snapshot, resultsOnly = false) {
   return `<div class="kicker">耗时 ${snapshot.latency_ms || 0} ms · ${rows.length} 行${snapshot.truncated ? "（截断）" : ""}</div>${table}${more}`;
 }
 
+function comparisonNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const text = String(value).trim();
+  if (!/^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(text)) return null;
+  const number = Number(text.replace(/,/g, ""));
+  return Number.isFinite(number) ? number : null;
+}
+
+function comparisonValue(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const number = comparisonNumber(value);
+  return number === null ? String(value) : number.toLocaleString("zh-CN", {maximumFractionDigits: 12});
+}
+
+function differenceDimension(type) {
+  return {PERIOD_MISMATCH: "period", SCOPE_MISMATCH: "scope", GRAIN_MISMATCH: "grain",
+    MISSING_FIELD: "field_coverage", MISSING_ROW: "row_coverage", WRONG_VALUE: "numeric_accuracy",
+    UNIT_MISMATCH: "unit_caliber", CALIBER_MISMATCH: "unit_caliber"}[type] || "other";
+}
+
+function comparisonDelta(item) {
+  const agent = typeof item.normalized_agent_value === "number" ? comparisonNumber(item.normalized_agent_value) : null;
+  const sql = typeof item.normalized_sql_value === "number" ? comparisonNumber(item.normalized_sql_value) : null;
+  if (item.type !== "WRONG_VALUE" || agent === null || sql === null) return {delta: null, ratio: null};
+  const delta = agent - sql;
+  return {delta: Number.isFinite(delta) ? delta : null, ratio: sql === 0 || !Number.isFinite(delta / Math.abs(sql)) ? null : delta / Math.abs(sql)};
+}
+
 function renderLlmDiff(evaluation, judgment) {
   const artifact = evaluation || {};
   const data = artifact.evaluation || null;
-  if (!data) return '<p class="empty">本题尚无 LLM 评估结果</p>';
+  if (!data) return '<div class="llm-empty"><strong>尚无评估结果</strong><p>评估完成后，将显示总体结论、七个检查维度和差异明细。</p></div>';
   const verdict = (judgment || {}).final_verdict || data.overall_verdict;
   const overridden = (judgment || {}).manual_verdict && judgment.manual_verdict !== judgment.auto_verdict;
   const confidence = data.confidence;
   const dimensions = data.dimensions || {};
+  const items = data.differences || [];
+  const counts = Object.keys(dimensionLabels).reduce((result, key) => {
+    const status = dimensions[key]?.status || "UNKNOWN";
+    result[status] = (result[status] || 0) + 1;
+    return result;
+  }, {});
+  const checks = [`${counts.MATCH || 0} / 7 个维度一致`, counts.MISMATCH ? `${counts.MISMATCH} 个不一致` : "",
+    counts.PARTIAL ? `${counts.PARTIAL} 个部分一致` : "", counts.UNKNOWN ? `${counts.UNKNOWN} 个待确认` : "",
+    counts.NA ? `${counts.NA} 个不适用` : ""].filter(Boolean).join(" · ");
   const dimensionRows = Object.entries(dimensionLabels).map(([key, label]) => {
     const dimension = dimensions[key] || {};
     const status = dimension.status || "UNKNOWN";
-    return `<div class="llm-dim"><span class="llm-dim-name">${escapeHtml(label)}</span><span class="llm-dim-status ${status}">${escapeHtml(dimensionStatusLabels[status] || status)}</span><span class="llm-dim-reason" title="${escapeHtml(dimension.reason || "")}">${escapeHtml(dimension.reason || "")}</span></div>`;
+    const count = items.filter(item => differenceDimension(item.type) === key).length;
+    return `<button type="button" class="llm-dim" data-diff-dimension="${key}" aria-pressed="false"><span class="llm-dim-name">${escapeHtml(label)}</span><span class="llm-dim-status ${escapeHtml(status)}">${escapeHtml(dimensionStatusLabels[status] || status)}</span><span class="llm-dim-reason">${escapeHtml(dimension.reason || "未记录核验说明")}</span><span class="llm-dim-count">${count ? `${count} 项差异 · 查看明细` : "查看核验说明"}</span></button>`;
   }).join("");
-  const differences = (data.differences || []).map(item => {
+  const differences = items.map(item => {
     const coordinate = Object.entries(item.coordinate || {}).map(([key, value]) => `${key}：${value}`).join(" · ") || "—";
-    const position = item.field ? `${coordinate} · ${item.field}` : coordinate;
-    return `<tr class="${item.severity === "ERROR" ? "wrong" : "review-row"}"><td>${escapeHtml(issueTypeLabels[item.type] || item.type)}</td><td>${escapeHtml(position)}</td><td>${escapeHtml(item.agent_value === null || item.agent_value === undefined ? "" : String(item.agent_value))}</td><td>${escapeHtml(item.sql_value === null || item.sql_value === undefined ? "" : String(item.sql_value))}</td><td>${escapeHtml(item.explanation || item.evidence || "")}</td></tr>`;
+    const {delta, ratio} = comparisonDelta(item);
+    const signed = value => value === null ? "—" : `${value > 0 ? "+" : ""}${comparisonValue(value)}`;
+    const evidence = item.evidence && item.evidence !== item.explanation ? `<details class="llm-evidence"><summary>查看证据</summary><p>${escapeHtml(item.evidence)}</p></details>` : "";
+    return `<tr data-dimension="${differenceDimension(item.type)}" data-ratio="${ratio === null ? "" : Math.abs(ratio)}"><td><span class="llm-issue ${item.severity === "ERROR" ? "error" : "warning"}">${escapeHtml(issueTypeLabels[item.type] || item.type)}</span><small>${item.severity === "ERROR" ? "错误" : "需复核"}</small></td><td>${escapeHtml(coordinate)}</td><td>${escapeHtml(item.field || "—")}</td><td class="llm-number">${escapeHtml(comparisonValue(item.agent_value))}</td><td class="llm-number">${escapeHtml(comparisonValue(item.sql_value))}</td><td class="llm-number">${escapeHtml(signed(delta))}</td><td class="llm-number">${ratio === null ? "—" : `${ratio > 0 ? "+" : ""}${(ratio * 100).toFixed(1)}%`}</td><td>${escapeHtml(item.explanation || (item.evidence ? "见核验证据" : "未记录说明"))}${evidence}</td></tr>`;
   }).join("");
   const meta = [artifact.model, artifact.prompt_version, localTime(artifact.created_at), artifact.latency_ms ? compactDuration(artifact.latency_ms) : ""].filter(Boolean).join(" · ");
-  return `<div class="llm-overall">
+  return `<section class="llm-overall"><div class="llm-verdict-line">
       <span class="result-tag ${verdict}">${verdictLabel(verdict)}</span>
       ${overridden ? '<span class="verdict-stamp">平反</span>' : ""}
-      <span class="llm-confidence">置信度 ${confidence === null || confidence === undefined ? "—" : Math.round(Number(confidence) * 100) + "%"}</span>
-      <span class="llm-summary">${escapeHtml(data.summary || "无结论说明")}</span>
-    </div>
-    <div class="llm-dimensions">${dimensionRows}</div>
+      <span class="llm-confidence" title="评估模型返回的判断置信度，不代表准确率或通过率">模型判断置信度 ${confidence === null || confidence === undefined ? "—" : Math.round(Number(confidence) * 100) + "%"}</span></div>
+      <p class="llm-check-count">${checks} · ${items.length} 项差异</p>
+      <p class="llm-summary">${escapeHtml(data.summary || "无结论说明")}</p>
+      ${overridden ? `<p class="llm-meta">已人工调整结论；以下维度和差异保留自动评估记录。</p>` : ""}
+    </section>
+    <h3 class="llm-section-title">检查维度</h3><div class="llm-dimensions">${dimensionRows}</div>
+    <section class="llm-detail-section"><div class="llm-detail-heading"><h3 class="llm-section-title">差异明细 <span data-diff-count>${items.length} 项</span></h3><button type="button" class="btn ghost" data-diff-reset>查看全部</button><label>排序 <select data-diff-sort><option value="original">原始顺序</option><option value="ratio">差异率从高到低</option></select></label></div>
+    <p class="llm-detail-note" data-diff-note>差值 = 标准化回答值 − 标准化基准值；差异率 = 差值 / 基准值绝对值。未完成标准化或基准为零时，相关结果显示“—”。</p>
     ${differences.length
-      ? `<table class="llm-differences"><thead><tr><th>问题类型</th><th>位置 / 字段</th><th>智能体值</th><th>SQL 值</th><th>说明</th></tr></thead><tbody>${differences}</tbody></table>`
-      : '<p class="kicker">未记录差异项</p>'}
+      ? `<div class="llm-table-scroll" tabindex="0" role="region" aria-label="差异明细，可横向滚动"><table class="llm-differences"><thead><tr><th>问题类型</th><th>数据位置</th><th>指标 / 字段</th><th>回答值</th><th>基准值（SQL）</th><th>标准化差值</th><th>差异率</th><th>说明 / 证据</th></tr></thead><tbody>${differences}</tbody></table></div>`
+      : ""}
+    <p class="llm-empty" data-diff-empty ${items.length ? "hidden" : ""}>${verdict === "QUALIFIED" ? "本次评估未发现差异。" : "未记录差异明细，请结合总体结论与维度说明判断。"}</p></section>
     <p class="llm-meta">${escapeHtml(meta || "评估元信息未记录")}</p>`;
+}
+
+function bindLlmDiff(panel) {
+  const rows = [...panel.querySelectorAll(".llm-differences tbody tr")];
+  const cards = [...panel.querySelectorAll("[data-diff-dimension]")];
+  const note = panel.querySelector("[data-diff-note]");
+  if (!note) return;
+  const originalNote = note.textContent;
+  const filter = key => {
+    cards.forEach(card => card.setAttribute("aria-pressed", String(card.dataset.diffDimension === key)));
+    rows.forEach(row => { row.hidden = Boolean(key) && row.dataset.dimension !== key; });
+    const visible = rows.filter(row => !row.hidden).length;
+    panel.querySelector("[data-diff-count]").textContent = `${visible} 项${key ? ` / 全部 ${rows.length} 项` : ""}`;
+    note.textContent = key ? `${dimensionLabels[key]}：${cards.find(card => card.dataset.diffDimension === key).querySelector(".llm-dim-reason").textContent}` : originalNote;
+    const empty = panel.querySelector("[data-diff-empty]");
+    empty.hidden = visible > 0;
+    if (key) empty.textContent = "此维度未记录差异明细，核验说明见上方。";
+    else empty.textContent = "未记录差异明细，请结合总体结论与维度说明判断。";
+  };
+  cards.forEach(card => card.addEventListener("click", () => filter(card.getAttribute("aria-pressed") === "true" ? "" : card.dataset.diffDimension)));
+  panel.querySelector("[data-diff-reset]").addEventListener("click", () => filter(""));
+  panel.querySelector("[data-diff-sort]").addEventListener("change", event => {
+    const ordered = event.target.value === "ratio" ? [...rows].sort((a, b) => (b.dataset.ratio === "" ? -1 : Number(b.dataset.ratio)) - (a.dataset.ratio === "" ? -1 : Number(a.dataset.ratio))) : rows;
+    ordered.forEach(row => row.parentNode.appendChild(row));
+  });
 }
 
 async function renderIndex() {
@@ -406,7 +482,10 @@ async function renderCase() {
   const result = detail.result || {};
   const timing = result.agent_timings || {};
   const alignment = result.alignment || {};
-  document.getElementById("case-kicker").textContent = `${caseId} · ${result.scene_big || ""} · ${result.result_type || ""}`;
+  const logs = detail.logs || {};
+  const failures = [result.not_scored_reason, ...(result.error_types || [])].filter(Boolean);
+  const failureNote = [...new Set(failures)].join("、");
+  document.getElementById("case-kicker").textContent = `${caseId} · ${result.scene_big || ""} · ${result.result_type || ""}${failureNote ? ` · ${failureNote}` : ""}`;
   document.getElementById("case-title").textContent = caseId;
   const judgment = detail.judgment || {};
   document.getElementById("case-question").textContent = result.question || (detail.contract || {}).question || "";
@@ -420,6 +499,7 @@ async function renderCase() {
   const queryParams = Object.fromEntries(Object.entries(sql.params || alignment.sql_params || alignment.requested_params || {}).filter(([key]) => !key.startsWith("__text_")));
   const sqlNotice = supplemental ? `事后补查参考结果 · ${localTime(sql.finished_at)}（北京时间） · 不修改原评分` : alignment.query_purpose === "requested_context_reference" ? "按原请求期间查询，尚未与回答期间对齐，不参与评分" : "";
   document.getElementById("tab-diff").innerHTML = renderLlmDiff(detail.llm_evaluation, judgment);
+  bindLlmDiff(document.getElementById("tab-diff"));
   const raw = (detail.agent_answer || {}).raw || {};
   const req = raw.request || {};
   const resp = raw.response || {};
@@ -480,8 +560,10 @@ async function renderCase() {
   document.getElementById("tab-caliber").innerHTML = caliberRows ? `<table class="caliber-table"><thead><tr><th>类型</th><th>对齐对象</th><th>统一格式 / 单位</th><th>口径规则</th></tr></thead><tbody>${caliberRows}</tbody></table>` : '<p class="empty">本题没有需要转换的维度或单位</p>';
   document.getElementById("tab-logs").innerHTML = `<div class="log-columns">
     <section><h3>智能体运行</h3>${infoRows([["轮次", result.turn_index], ["回答状态", result.completion_status], ["首段回答", duration(timing.first_answer_ms)], ["完整响应", duration(timing.completed_ms)], ["传输总耗时", duration(timing.transport_total_ms ?? result.agent_latency_ms)], ["开始（北京时间）", localTime(timing.started_at)], ["结束（北京时间）", localTime(timing.finished_at)], ["重试次数", result.retries || 0]])}
-    <details><summary>智能体事件与错误</summary><pre>${escapeHtml(JSON.stringify({events: resp.event_counts, error: resp.error, remote_error: resp.remote_error}, null, 2))}</pre></details></section>
-    <section><h3>SQL 查询</h3>${infoRows([["查询状态", sql.error ? "失败" : sql.columns ? "完成" : "未执行"], ["查询耗时", sql.columns ? duration(sql.latency_ms) : "未记录"], ["结果行数", (sql.rows || []).length], ["补查次数", rechecks.length]])}
+    <details><summary>智能体事件与错误</summary><pre>${escapeHtml(JSON.stringify({events: resp.event_counts, error: errorText(resp.error), remote_error: resp.remote_error}, null, 2))}</pre></details></section>
+    <section><h3>失败原因</h3>${infoRows([["未评分原因", result.not_scored_reason], ["错误类型", (result.error_types || []).join("、")], ["智能体错误", errorText(logs.agent_error)], ["SQL 错误", errorText(logs.sql_error)], ["记录重试", logs.retries]])}
+    ${(logs.exceptions || []).length ? `<details><summary>异常类型 · ${logs.exceptions.length}</summary><pre>${escapeHtml(JSON.stringify(logs.exceptions, null, 2))}</pre></details>` : ""}</section>
+    <section><h3>SQL 查询</h3>${infoRows([["查询状态", sql.error ? "失败" : sql.columns ? "完成" : "未执行"], ["查询耗时", sql.columns ? duration(sql.latency_ms) : "未记录"], ["结果行数", (sql.rows || []).length], ["补查次数", rechecks.length], ["查询错误", errorText(sql.error)]])}
     ${(alignment.sql_attempts || []).length ? `<details><summary>时间回退记录</summary><pre>${escapeHtml(JSON.stringify(alignment.sql_attempts, null, 2))}</pre></details>` : ""}
     </section></div>`;
   document.querySelectorAll(".tabs button").forEach(btn => btn.addEventListener("click", () => {

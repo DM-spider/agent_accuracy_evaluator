@@ -165,7 +165,10 @@ def _public_params(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _public_error(exc: Exception) -> str:
-    return sanitize_sql_log(str(exc))
+    """pg8000 的错误对象 str() 后是整段字典；只取可读消息，不把文件名和行号抛给使用者。"""
+    first = exc.args[0] if getattr(exc, "args", ()) else None
+    detail = first.get("M") if isinstance(first, dict) else None
+    return sanitize_sql_log(str(detail or exc))
 
 
 def make_pg_connector(settings: Dict[str, Any], password: str) -> Callable[[], Any]:
