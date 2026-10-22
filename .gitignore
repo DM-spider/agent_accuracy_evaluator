@@ -33,3 +33,5 @@ scratch_*.py
 Thumbs.db
 Desktop.ini
 *.zip
+/cli_eval/out/raw/
+
