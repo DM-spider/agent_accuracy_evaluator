@@ -341,12 +341,37 @@ function shuffled(items) {
   return copy;
 }
 
-async function questionPool(all = false, predicate = null) {
+async function questionCases(all = false, predicate = null) {
   const catalog = await api("/api/catalog");
   let cases = catalog.cases || [];
   if (!all) cases = cases.filter(item => item.numeric_evaluable && item.realtime_ready);
   if (predicate) cases = cases.filter(predicate);
-  return cases.map(item => item.case_id);
+  return cases;
+}
+
+async function questionPool(all = false, predicate = null) {
+  return (await questionCases(all, predicate)).map(item => item.case_id);
+}
+
+// 按场景大类分组，大类顺序沿用 catalog（CX、LS、DMA、JL、BJ）。
+function groupByScene(cases) {
+  const groups = new Map();
+  for (const item of cases) {
+    const key = item.scene_big || "未分类";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item.case_id);
+  }
+  return [...groups.values()];
+}
+
+// 每个场景大类按黄金集顺序取前 count 题。
+function perCategoryFirst(cases, count = 2) {
+  return groupByScene(cases).flatMap(ids => ids.slice(0, count));
+}
+
+// 每个场景大类随机取 count 题。
+function perCategoryRandom(cases, count = 5) {
+  return groupByScene(cases).flatMap(ids => shuffled(ids).slice(0, count));
 }
 
 async function resolveScope(scope) {
@@ -356,6 +381,16 @@ async function resolveScope(scope) {
     return caseIds;
   }
   if (scope === "verified") return questionPool(false, item => item.business_verified);
+  if (scope === "percategory2") {
+    const cases = await questionCases(false);
+    if (!cases.length) throw new Error("当前范围没有可测评题目");
+    return perCategoryFirst(cases, 2);
+  }
+  if (scope === "percategoryrandom5") {
+    const cases = await questionCases(false);
+    if (!cases.length) throw new Error("当前范围没有可测评题目");
+    return perCategoryRandom(cases, 5);
+  }
   const pool = await questionPool(scope === "all");
   if (!pool.length) throw new Error("当前范围没有可测评题目");
   if (scope === "all") return pool;
