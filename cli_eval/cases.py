@@ -9,10 +9,12 @@ from __future__ import annotations
 import copy
 import json
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from cli_eval.cli_client import DETAIL, METRIC, fetch_paged, probe_error
+from cli_eval.cli_client import DETAIL, METRIC, fetch_paged
+from cli_eval.outdir import version_dir
 from cli_eval.normalize import (
     compare_rows,
     compare_stat,
@@ -22,7 +24,6 @@ from cli_eval.normalize import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_DIR = Path(__file__).resolve().parent / "out" / "golden_db"
 
 GOLDEN = json.loads((ROOT / "data" / "golden" / "golden_dataset.json").read_text(encoding="utf-8"))
 CASES = {c["case_id"]: c for c in GOLDEN["cases"] if c.get("business_verified")}
@@ -45,7 +46,8 @@ def expected_of(case_id: str) -> Dict[str, Any]:
 
 
 def db_rows(case_id: str) -> List[Dict[str, Any]]:
-    path = DB_DIR / f"{case_id}.json"
+    """当天版本的标准值快照（由 check_golden_db.py 写入）。"""
+    path = version_dir() / "golden_db" / f"{case_id}.json"
     if not path.exists():
         return []
     return json.loads(path.read_text(encoding="utf-8")).get("rows") or []
@@ -55,8 +57,27 @@ def metric_rows(command: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     return fetch_paged(command, params, kind=METRIC)["rows"]
 
 
-def detail_rows(command: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return fetch_paged(command, params, kind=DETAIL)["rows"]
+def detail_rows(command: str, params: Dict[str, Any], *, max_pages: int = 500) -> List[Dict[str, Any]]:
+    return fetch_paged(command, params, kind=DETAIL, max_pages=max_pages)["rows"]
+
+
+JULY = {"create_time_start": "2026-07-01 00:00:00", "create_time_end": "2026-07-31 23:59:59"}
+
+
+def in_month(value: Any, year_month: str = "2026-07") -> bool:
+    return str(value or "").startswith(year_month)
+
+
+def parse_time(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def by_period(rows: Sequence[Dict[str, Any]], field: str = "statValue") -> Dict[str, float]:
@@ -233,9 +254,10 @@ def case_cx032() -> Dict[str, Any]:
             "202604 起累计口径被修订，差异暴露。"
         ),
         recommendation=(
-            "统一「当月水量」口径：要么 CLI 直接暴露 SzwgBusiness 单月值，"
+            "统一「当月水量」口径：要么 CLI 直接暴露 SzwgBusiness 单月值（BothUcisMonth），"
             "要么标准集改用 SzwgBusinessYear 累计差并重新业务确认。"
-            "在口径定稿前，不要把 month_* 当成唯一当月来源。"
+            "已确认 CLI 的 periodType 只支持 1=日 / 2=月 / 3=年，BothUcisMonth 尚未开放，"
+            "在口径定稿前不要把 month_* 当成唯一当月来源。"
         ),
         evidence=[
             "202604 售水量：CLI 2181838 / 标准 2181993",
@@ -544,40 +566,55 @@ def case_dma026() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def blocked(case_id: str, command: str, params: Dict[str, Any], *, fields: str, recommendation: str) -> Dict[str, Any]:
-    error = probe_error(command, params)
-    return result(
-        case_id,
-        "BLOCKED",
-        actual=None,
-        diffs=[],
-        root_cause=(
-            f"命令 `{command}`（{error['commandLength']} 字符）调用返回 "
-            f"{error['respCode']}：{error['respMsg']}。网关限制 commandCode ≤ 32 字符，"
-            "该命令在 authority 中存在但 invoke 无法执行。"
-        ),
-        recommendation=recommendation
-        + f" 另外，该题需要字段：{fields}；改短命令码后请一并确认这些字段已返回。",
-        evidence=[
-            f"commandCode={command}，长度 {error['commandLength']}",
-            f"respCode={error['respCode']}，respMsg={error['respMsg']}",
-            "同批 31/29 字符的命令（如 fire_hydrant_maintenance_work）可正常调用，确认是长度限制",
-        ],
-        plan=[{"command": command, "params": params, "error": error}],
-        standard_vs_db=compare_standard_vs_db(case_id),
-        actual_text="E101",
-        expected_text=f"{len(db_rows(case_id))} 行",
-        db_text=f"当前库重跑 {len(db_rows(case_id))} 行",
-    )
-
-
 def case_jl016() -> Dict[str, Any]:
-    return blocked(
+    rows = detail_rows("water_supply_pipe_maintenance_work", JULY)
+    july = [r for r in rows if in_month(r.get("create_time"))]
+    counts = Counter(org_name(r.get("bz_bm")) for r in july)
+    totals: Dict[str, float] = defaultdict(float)
+    for r in july:
+        value = num(r.get("water_leakage"))
+        if value is not None:
+            totals[org_name(r.get("bz_bm"))] += value
+    expected = expected_of("JL-016")["detail"]["rows"]
+    actual = [
+        {
+            "组织": org_name(exp["组织"]),
+            "工单数": counts.get(org_name(exp["组织"]), 0),
+            "维修漏损水量": round(totals[org_name(exp["组织"])], 4) if org_name(exp["组织"]) in totals else None,
+        }
+        for exp in expected
+    ]
+    diffs = compare_rows(
+        actual,
+        expected,
+        key_actual="组织",
+        key_expected="组织",
+        fields=[{"expected": "维修漏损水量", "actual": "维修漏损水量",
+                 "tolerance": {"kind": "rel", "eps": 0.001, "abs_floor": 0.01}}],
+    )
+    return result(
         "JL-016",
-        "water_supply_pipe_maintenance_work",
-        {"pageNumber": 1, "pageSize": 50, "create_time_start": "2026-07-01 00:00:00", "create_time_end": "2026-07-31 23:59:59"},
-        fields="bz_bm、create_time、water_leakage",
-        recommendation="把命令改名为 ≤32 字符（如 wsp_maintenance_work）或提供短别名；同时确认 water_leakage 字段在明细中返回。",
+        "PASS" if not diffs else "VALUE_DIFF",
+        actual=actual,
+        diffs=diffs,
+        root_cause="" if not diffs else (
+            f"7 月 {len(july)} 条工单按组织汇总 water_leakage 后与标准值不一致；"
+            "需确认 water_leakage 的空值（NULL/''）处理与标准 SQL 的 NULLIF 一致，以及组织归口是否相同。"
+        ),
+        recommendation="" if not diffs else (
+            "确认 water_leakage 字段的空值语义与单位（m³）；"
+            "并核对 bz_bm 与标准 SQL 的组织映射（坪地分公司→坪地供水等）。"
+        ),
+        evidence=[
+            f"water_supply_pipe_maintenance_work 7 月 {len(july)} 条，{len(counts)} 个组织",
+            f"water_leakage 非空 {sum(1 for r in july if num(r.get('water_leakage')) is not None)} 条",
+            f"标准值 13 行，合计漏损水量 {sum(r['维修漏损水量'] or 0 for r in expected):.2f} m³",
+        ],
+        plan=[{"command": "water_supply_pipe_maintenance_work", "params": JULY, "rows": len(rows)}],
+        standard_vs_db=compare_standard_vs_db("JL-016"),
+        actual_text=f"{len(july)} 条 / {len(counts)} 个组织 / 合计 {sum(totals.values()):.2f} m³",
+        expected_text=f"{len(expected)} 行",
+        db_text=f"当前库重跑 {len(db_rows('JL-016'))} 行",
     )
 
 
@@ -642,32 +679,159 @@ def case_jl018() -> Dict[str, Any]:
 
 
 def case_jl019() -> Dict[str, Any]:
-    return blocked(
+    rows = detail_rows("leak_detection_and_verification_work", JULY)
+    july = [r for r in rows if in_month(r.get("create_time"))]
+    # 标准 SQL：ORDER BY create_time DESC, id ASC LIMIT 10
+    july.sort(key=lambda r: str(r.get("id") or ""))
+    july.sort(key=lambda r: str(r.get("create_time") or ""), reverse=True)
+    top = july[:10]
+    actual = [
+        {
+            "工单编号": r.get("id"),
+            "组织": org_name(r.get("bz_bm")),
+            "标题": r.get("title"),
+            "创建时间": str(r.get("create_time") or "")[:19],
+        }
+        for r in top
+    ]
+    diffs = compare_rows(
+        actual,
+        expected_of("JL-019")["detail"]["rows"],
+        key_actual="工单编号",
+        key_expected="工单编号",
+        alias_actual=False,
+        fields=[],
+    )
+    cli_orgs = sorted({org_name(r.get("bz_bm")) for r in july})
+    return result(
         "JL-019",
-        "leak_detection_and_verification_work",
-        {"pageNumber": 1, "pageSize": 50, "create_time_start": "2026-07-01 00:00:00", "create_time_end": "2026-07-31 23:59:59"},
-        fields="id、bz_bm、title、create_time，且需按 create_time DESC 取前 10",
-        recommendation="改短命令码（如 jl_work_detail）；同时确认明细接口支持按 create_time 倒序或提供 sort 参数，否则客户端只能拉全量后排序。",
+        "PASS" if not diffs else "VALUE_DIFF",
+        actual=actual,
+        diffs=diffs,
+        root_cause="" if not diffs else (
+            f"7 月 CLI 只有 {len(july)} 条、覆盖 {len(cli_orgs)} 个单位（{'、'.join(cli_orgs)}），"
+            "与库表 dwd_gdgl_gd_jlmx 的行集不同，所以「最新 10 条」整批对不上；"
+            "不是排序问题——两边的工单编号集合本身没有交集。"
+        ),
+        recommendation="" if not diffs else (
+            "确认明细接口的 create_time 边界（含 7-31 23:59:59）以及排序规则；"
+            "如果接口本身不支持排序，客户端需拉全量后按 create_time DESC, id ASC 取前 10。"
+        ),
+        evidence=[
+            f"leak_detection_and_verification_work 7 月 {len(july)} 条",
+            f"最新一条：{actual[0]['工单编号'] if actual else '—'} / {actual[0]['创建时间'] if actual else '—'}",
+            f"标准值 10 条，首条 {expected_of('JL-019')['detail']['rows'][0]['工单编号'] if expected_of('JL-019')['detail']['rows'] else '—'}",
+        ],
+        plan=[{"command": "leak_detection_and_verification_work", "params": JULY, "rows": len(rows)}],
+        standard_vs_db=compare_standard_vs_db("JL-019"),
+        actual_text=f"{len(july)} 条 / TOP10",
+        expected_text="10 条",
+        db_text=f"当前库重跑 {len(db_rows('JL-019'))} 行",
     )
 
 
 def case_jl021() -> Dict[str, Any]:
-    return blocked(
+    rows = detail_rows("leak_detection_and_verification_work", JULY)
+    buckets: Dict[str, List[float]] = defaultdict(list)
+    skipped = 0
+    for r in rows:
+        create, arrive = parse_time(r.get("create_time")), parse_time(r.get("arrive_time"))
+        if not in_month(r.get("create_time")) or create is None or arrive is None:
+            skipped += 1
+            continue
+        buckets[org_name(r.get("bz_bm"))].append((arrive - create).total_seconds() / 3600.0)
+    actual = [
+        {"组织": org, "有到场工单数": len(hours), "平均响应小时数": round(sum(hours) / len(hours), 4)}
+        for org, hours in sorted(buckets.items())
+    ]
+    diffs = compare_rows(
+        actual,
+        expected_of("JL-021")["detail"]["rows"],
+        key_actual="组织",
+        key_expected="组织",
+        fields=[{"expected": "平均响应小时数", "actual": "平均响应小时数",
+                 "tolerance": {"kind": "rel", "eps": 0.001, "abs_floor": 0.01}}],
+    )
+    expected_orgs = {org_name(r["组织"]) for r in expected_of("JL-021")["detail"]["rows"]}
+    missing = sorted(expected_orgs - set(buckets))
+    return result(
         "JL-021",
-        "leak_detection_and_verification_work",
-        {"pageNumber": 1, "pageSize": 50, "create_time_start": "2026-07-01 00:00:00", "create_time_end": "2026-07-31 23:59:59"},
-        fields="bz_bm、create_time、arrive_time",
-        recommendation="改短命令码；同时确认 arrive_time（首次到场时间）字段返回，且空值语义明确，否则无法算平均响应小时数。",
+        "PASS" if not diffs else "VALUE_DIFF",
+        actual=actual,
+        diffs=diffs,
+        root_cause="" if not diffs else (
+            f"7 月 {len(rows)} 条中 {sum(len(v) for v in buckets.values())} 条有到场时间，覆盖 {len(buckets)} 个单位；"
+            f"标准值要求 {len(expected_orgs)} 个单位，其中 {('、'.join(missing)) if missing else '无'} 在 CLI 里没有记录。"
+            "行集与库表 dwd_gdgl_gd_jlmx 不一致是主因，平均响应时间本身也受入参口径影响。"
+        ),
+        recommendation="" if not diffs else (
+            "确认 arrive_time 的口径（首次到场 vs 末次到场）及空值处理；"
+            "如果接口返回多段到场记录，需要明确取哪一条。"
+        ),
+        evidence=[
+            f"7 月 {len(rows)} 条，有到场时间 {sum(len(v) for v in buckets.values())} 条",
+            f"覆盖组织 {len(buckets)} 个，标准值 6 个",
+            f"跳过 {skipped} 条（期间外或缺时间）",
+        ],
+        plan=[{"command": "leak_detection_and_verification_work", "params": JULY, "rows": len(rows)}],
+        standard_vs_db=compare_standard_vs_db("JL-021"),
+        actual_text="; ".join(f"{r['组织']}: {r['平均响应小时数']}h" for r in actual[:6]),
+        expected_text="6 个组织",
+        db_text=f"当前库重跑 {len(db_rows('JL-021'))} 行",
     )
 
 
 def case_jl022() -> Dict[str, Any]:
-    return blocked(
+    rows = detail_rows("leak_detection_and_verification_work", JULY)
+    total, finished = Counter(), Counter()
+    for r in rows:
+        if not in_month(r.get("create_time")):
+            continue
+        org = org_name(r.get("bz_bm"))
+        total[org] += 1
+        if str(r.get("finish_time") or "").strip():
+            finished[org] += 1
+    actual = [
+        {"组织": org, "工单总数": cnt, "完成数": finished[org],
+         "完成率": round(finished[org] / cnt, 4) if cnt else None}
+        for org, cnt in sorted(total.items())
+    ]
+    diffs = compare_rows(
+        actual,
+        expected_of("JL-022")["detail"]["rows"],
+        key_actual="组织",
+        key_expected="组织",
+        fields=[
+            {"expected": "工单总数", "actual": "工单总数", "tolerance": {"kind": "exact"}},
+            {"expected": "完成数", "actual": "完成数", "tolerance": {"kind": "exact"}},
+            {"expected": "完成率", "actual": "完成率", "tolerance": {"kind": "abs", "eps": 0.01}},
+        ],
+    )
+    expected_orgs = {org_name(r["组织"]) for r in expected_of("JL-022")["detail"]["rows"]}
+    missing = sorted(expected_orgs - set(total))
+    return result(
         "JL-022",
-        "leak_detection_and_verification_work",
-        {"pageNumber": 1, "pageSize": 50, "create_time_start": "2026-07-01 00:00:00", "create_time_end": "2026-07-31 23:59:59"},
-        fields="bz_bm、finish_time（或 step_status_name）",
-        recommendation="改短命令码；同时明确「完成」判定字段：finish_time 非空，还是 step_status_name 属于已完成/已销单。",
+        "PASS" if not diffs else "VALUE_DIFF",
+        actual=actual,
+        diffs=diffs,
+        root_cause="" if not diffs else (
+            f"7 月 CLI 共 {sum(total.values())} 条、覆盖 {len(total)} 个单位；标准值 {len(expected_orgs)} 个单位，"
+            f"其中 {('、'.join(missing)) if missing else '无'} 在 CLI 里没有记录。"
+            "行集不一致是主因，完成判定（finish_time 非空）口径差异是次要因素。"
+        ),
+        recommendation="" if not diffs else (
+            "确认 finish_time 的写入时机（销单 vs 处理完成）；"
+            "若业务以 step_status_name=已处理完成为准，需要把口径写进题目并同步改标准 SQL。"
+        ),
+        evidence=[
+            f"7 月 {sum(total.values())} 条，finish_time 非空 {sum(finished.values())} 条",
+            f"覆盖组织 {len(total)} 个，标准值 6 个",
+        ],
+        plan=[{"command": "leak_detection_and_verification_work", "params": JULY, "rows": len(rows)}],
+        standard_vs_db=compare_standard_vs_db("JL-022"),
+        actual_text="; ".join(f"{r['组织']} {r['完成数']}/{r['工单总数']}" for r in actual[:6]),
+        expected_text="6 个组织",
+        db_text=f"当前库重跑 {len(db_rows('JL-022'))} 行",
     )
 
 
@@ -677,9 +841,15 @@ def case_jl036() -> Dict[str, Any]:
     for row in rows:
         if str(row.get("periodPoint")) == "202606":
             rates[org_name(row.get("dimensionValue"))] = num(row.get("statValue"))
+    july_orders = detail_rows("leak_detection_and_verification_work", JULY)
+    counts = Counter(org_name(r.get("bz_bm")) for r in july_orders if in_month(r.get("create_time")))
     expected = expected_of("JL-036")["detail"]
     actual = [
-        {"组织": org_name(exp["组织"]), "单月产销差率": rates.get(org_name(exp["组织"])), "检漏工单数": None}
+        {
+            "组织": org_name(exp["组织"]),
+            "单月产销差率": rates.get(org_name(exp["组织"])),
+            "检漏工单数": counts.get(org_name(exp["组织"]), 0),
+        }
         for exp in expected["rows"]
     ]
     diffs = compare_rows(
@@ -687,33 +857,38 @@ def case_jl036() -> Dict[str, Any]:
         expected["rows"],
         key_actual="组织",
         key_expected="组织",
-        fields=[{"expected": "单月产销差率", "actual": "单月产销差率", "tolerance": {"kind": "abs", "eps": 0.01}}],
+        fields=[
+            {"expected": "单月产销差率", "actual": "单月产销差率", "tolerance": {"kind": "abs", "eps": 0.01}},
+            {"expected": "检漏工单数", "actual": "检漏工单数", "tolerance": {"kind": "exact"}},
+        ],
     )
+    rate_diffs = [d for d in diffs if d.get("field") == "单月产销差率"]
+    count_diffs = [d for d in diffs if d.get("field") == "检漏工单数"]
     return result(
         "JL-036",
         "PARTIAL",
         actual=actual,
         diffs=diffs,
         root_cause=(
-            "单月产销差率：CLI month_diff_rate 仍用累计口径计算当月供水量，"
-            "盐田 202606 CLI 12.92% vs 标准 10.35%；检漏工单数列被 "
-            "leak_detection_and_verification_work 的 36 字符 commandCode 阻塞。"
+            f"单月产销差率仍有 {len(rate_diffs)} 个单位不符：CLI month_diff_rate 的 periodType 只支持 1=日/2=月/3=年，"
+            "当月值由年累计相减得到，标准值用 SzwgBusiness 单月快照；文档提到的 BothUcisMonth 口径尚未在 CLI 开放。"
+            f"检漏工单数已可核对（7 月 {len(july_orders)} 条，{len(count_diffs)} 个单位不符）。"
         ),
         recommendation=(
-            "先修 commandCode 长度；同时统一单月产销差率口径："
-            "标准值用 SzwgBusiness 单月快照，CLI 用 SzwgBusinessYear 累计差。"
+            "在 CLI 上开放 BothUcisMonth（单月快照）口径的产销差率，或在 month_diff_rate 里直接返回单月值；"
+            "在此之前不要把 month_diff_rate 当作单月口径的验收依据。"
         ),
         evidence=[
-            "盐田 202606：标准 0.1035（本次 SQL SzwgBusiness 2539522/2276570）",
+            "盐田 202606：标准 0.1035（SQL SzwgBusiness 2539522/2276570）",
             "CLI month_diff_rate 盐田 202606：0.1292（YTD 差 2614311/2276570）",
-            "检漏工单数列 E101：commandCode 长度 36",
+            f"检漏工单数：CLI 7 月 {len(july_orders)} 条，按 bz_bm 归出 {len(counts)} 个组织",
         ],
         plan=[
             {"command": "month_diff_rate", "params": {"periodType": 2, "dimensionType": 1}, "rows": len(rows)},
-            {"command": "leak_detection_and_verification_work", "params": {}, "error": "E101 commandCode > 32"},
+            {"command": "leak_detection_and_verification_work", "params": JULY, "rows": len(july_orders)},
         ],
         standard_vs_db=compare_standard_vs_db("JL-036"),
-        actual_text=f"单月率 {len(rates)} 个单位；检漏工单数不可取",
+        actual_text=f"单月率 {len(rates)} 个单位；检漏工单 {sum(counts.values())} 条",
         expected_text="14 个组织 × 2 列",
         db_text=f"当前库重跑 {len(db_rows('JL-036'))} 行",
     )
@@ -774,12 +949,60 @@ def case_bj003() -> Dict[str, Any]:
 
 
 def case_bj012() -> Dict[str, Any]:
-    return blocked(
+    params = {"create_time_start": "2026-01-01 00:00:00", "create_time_end": "2026-08-18 00:00:00"}
+    rows = detail_rows("water_supply_pipe_maintenance_work", params, max_pages=1200)
+    buckets: Dict[tuple, Dict[str, Any]] = {}
+    for r in rows:
+        created = str(r.get("create_time") or "")
+        code = str(r.get("pipe_number") or "").strip()
+        if not created or created >= "2026-08-18" or not code:
+            continue
+        org = org_name(r.get("bz_bm"))
+        bucket = buckets.setdefault((code, org), {"cnt": 0, "addr": ""})
+        bucket["cnt"] += 1
+        if not bucket["addr"]:
+            bucket["addr"] = str(r.get("detailedaddress") or "")
+    actual = [
+        {"__key": f"{code}|{org}", "管道编码": code, "组织": org, "地址": b["addr"], "维修次数": b["cnt"]}
+        for (code, org), b in buckets.items() if b["cnt"] > 2
+    ]
+    expected = [
+        {"__key": f"{r['管道编码']}|{org_name(r['组织'])}", "管道编码": r["管道编码"],
+         "组织": org_name(r["组织"]), "地址": r.get("地址"), "维修次数": r["维修次数"]}
+        for r in expected_of("BJ-012")["detail"]["rows"]
+    ]
+    diffs = compare_rows(
+        actual,
+        expected,
+        key_actual="__key",
+        key_expected="__key",
+        alias_actual=False,
+        fields=[{"expected": "维修次数", "actual": "维修次数", "tolerance": {"kind": "exact"}}],
+    )
+    return result(
         "BJ-012",
-        "water_supply_pipe_maintenance_work",
-        {"pageNumber": 1, "pageSize": 50},
-        fields="设施编码、bz_bm、地址、create_time，且需按设施编码分组计数",
-        recommendation="改短命令码；如果要做「全年反复维修」，还要确认 create_time 的年初边界和设施编码字段名（标准值用 dwd_gdgl_gd_gsgdwxmx 的设施编码）。",
+        "PASS" if not diffs else "VALUE_DIFF",
+        actual=sorted(actual, key=lambda r: (-r["维修次数"], r["管道编码"]))[:200],
+        diffs=diffs,
+        root_cause="" if not diffs else (
+            f"2026-01-01 至 2026-08-17 共取回 {len(rows)} 条维修工单，"
+            f"按 (pipe_number, bz_bm) 分组后维修次数>2 的有 {len(actual)} 组，标准值 {len(expected)} 组；"
+            "差异来自工单行集或 pipe_number 归口口径。"
+        ),
+        recommendation="" if not diffs else (
+            "确认 water_supply_pipe_maintenance_work 的 create_time 边界与标准 SQL 一致（<2026-08-18），"
+            "并确认 pipe_number 为空/无效的过滤规则。"
+        ),
+        evidence=[
+            f"取回 {len(rows)} 条工单（2026-01-01 ~ 2026-08-17）",
+            f"维修次数>2 的分组 {len(actual)} 组，标准值 {len(expected)} 组",
+            f"标准值最高维修次数 {max((r['维修次数'] for r in expected), default=0)}",
+        ],
+        plan=[{"command": "water_supply_pipe_maintenance_work", "params": params, "rows": len(rows)}],
+        standard_vs_db=compare_standard_vs_db("BJ-012"),
+        actual_text=f"{len(rows)} 条 / {len(actual)} 组反复维修",
+        expected_text=f"{len(expected)} 组",
+        db_text=f"当前库重跑 {len(db_rows('BJ-012'))} 行",
     )
 
 
@@ -830,74 +1053,76 @@ def case_bj016() -> Dict[str, Any]:
     )
 
 
-_BURST = {
-    "400_pipe_diameter_burst": "不足400",
-    "600_pipe_diameter_burst": "400至不足600",
-    "1000_pipe_diameter_burst": "600至不足1000",
-    "than1000_pipe_diameter_burst": "1000毫米及以上",
-}
+def _diameter_segment(caliber: Any) -> str:
+    value = num(caliber)
+    if value is None:
+        return "未知"
+    if value >= 1000:
+        return "1000毫米及以上"
+    if value >= 600:
+        return "600至不足1000"
+    if value >= 400:
+        return "400至不足600"
+    return "不足400"
 
 
 def case_bj017() -> Dict[str, Any]:
-    sums: Dict[tuple, int] = defaultdict(int)
-    plan = []
-    total_rows = 0
-    for command, segment in _BURST.items():
-        rows = metric_rows(command, {"periodType": 1, "dimensionType": 1})
-        total_rows += len(rows)
-        for row in rows:
-            if str(row.get("periodPoint")) == "202607":
-                sums[(segment, org_name(row.get("dimensionValue")))] += int(num(row.get("statValue")) or 0)
-        plan.append({"command": command, "params": {"periodType": 1}, "rows": len(rows)})
-    # 标准值按「管径分段 + 组织」汇总，忽略三级部门
-    expected_rows = expected_of("BJ-017")["detail"]["rows"]
-    expected_unit: Dict[tuple, int] = defaultdict(int)
-    for row in expected_rows:
-        expected_unit[(row["管径分段"], org_name(row["组织"]))] += int(row["爆管次数"] or 0)
+    rows = detail_rows("water_supply_pipe_maintenance_work", JULY)
+    groups: Dict[tuple, Dict[str, Any]] = {}
+    for r in rows:
+        if not in_month(r.get("create_time")):
+            continue
+        accident = str(r.get("accident_type") or "")
+        flow = str(r.get("flow_status_name") or "")
+        if "爆" not in accident and "爆管" not in flow:
+            continue
+        seg = _diameter_segment(r.get("caliber"))
+        org = org_name(r.get("bz_bm"))
+        bucket = groups.setdefault((seg, org), {"cnt": 0, "l3": set()})
+        bucket["cnt"] += 1
+        if r.get("level3_name"):
+            bucket["l3"].add(str(r["level3_name"]))
     actual = [
-        {"__key": f"{seg}|{org}", "管径分段": seg, "组织": org, "爆管次数": cnt}
-        for (seg, org), cnt in sorted(sums.items())
+        {"__key": f"{seg}|{org}", "管径分段": seg, "组织": org,
+         "三级部门": max(sorted(b["l3"])) if b["l3"] else None, "爆管次数": b["cnt"]}
+        for (seg, org), b in groups.items()
     ]
-    expected_flat = [
-        {"__key": f"{seg}|{org}", "管径分段": seg, "组织": org, "爆管次数": cnt}
-        for (seg, org), cnt in sorted(expected_unit.items())
+    expected = [
+        {"__key": f"{r['管径分段']}|{org_name(r['组织'])}", "管径分段": r["管径分段"],
+         "组织": org_name(r["组织"]), "三级部门": r.get("三级部门"), "爆管次数": r["爆管次数"]}
+        for r in expected_of("BJ-017")["detail"]["rows"]
     ]
     diffs = compare_rows(
         actual,
-        expected_flat,
+        expected,
         key_actual="__key",
         key_expected="__key",
         alias_actual=False,
         fields=[{"expected": "爆管次数", "actual": "爆管次数", "tolerance": {"kind": "exact"}}],
     )
-    combo_missing = [d["key"] for d in diffs if d["type"] == "MISSING_ROW"]
-    combo_diff = [d["message"] for d in diffs if d["type"] == "VALUE_DIFF"]
     return result(
         "BJ-017",
-        "PARTIAL",
-        actual=actual,
+        "PASS" if not diffs else "VALUE_DIFF",
+        actual=sorted(actual, key=lambda r: (r["管径分段"], -r["爆管次数"])),
         diffs=diffs,
-        root_cause=(
-            "4 个爆管聚合命令可给出「管径分段 × 单位」的月度计数（periodType=1 日粒度，"
-            "客户端按 periodPoint=202607 汇总）；但标准值的 key 包含三级部门，"
-            "聚合命令只返回 dimensionValue=单位，没有 l3_name；"
-            "含三级部门的明细命令 water_supply_pipe_maintenance_work 又被 32 字符限制阻塞。"
-            + (f" 单位×分段缺 {len(combo_missing)} 组，值差 {len(combo_diff)} 组。" if combo_missing or combo_diff else "")
+        root_cause="" if not diffs else (
+            "明细命令已可下钻到「管径分段 × 单位 × 三级部门」："
+            f"7 月取回 {len(rows)} 条，按 accident_type/flow_status_name 含「爆」筛出后归出 {len(actual)} 组，"
+            f"标准值 {len(expected)} 组；差异来自爆管判定或组织/部门归口。"
         ),
-        recommendation=(
-            "给 4 个爆管聚合命令增加 dimensionType=2（三级部门）或 l3_name 维度；"
-            "或把 water_supply_pipe_maintenance_work 改短后开放 caliber + l3_name 明细。"
-            "否则只能验收单位级总量，无法验收「下钻到三级部门」。"
+        recommendation="" if not diffs else (
+            "确认爆管判定条件（accident_type LIKE '%爆%' OR flow_status_name LIKE '%爆管%'）"
+            "与标准 SQL 完全一致，并核对 caliber 为空时的分段归属。"
         ),
         evidence=[
-            f"4 个聚合命令共 {total_rows} 行，7 月按单位汇出 {len(actual)} 组",
-            f"标准值 27 行含三级部门；单位×分段缺 {len(combo_missing)} 组",
-            "聚合命令返回字段只有 dimensionValue，无 l3_name",
+            f"water_supply_pipe_maintenance_work 7 月 {len(rows)} 条",
+            f"筛选后 {len(actual)} 组（管径分段×单位），标准值 {len(expected)} 组",
+            "明细字段 caliber、level3_name、accident_type、flow_status_name 均已返回",
         ],
-        plan=plan,
+        plan=[{"command": "water_supply_pipe_maintenance_work", "params": JULY, "rows": len(rows)}],
         standard_vs_db=compare_standard_vs_db("BJ-017"),
         actual_text=f"{len(actual)} 组（管径×单位）",
-        expected_text="27 行（管径×单位×三级部门）",
+        expected_text=f"{len(expected)} 行（管径×单位×三级部门）",
         db_text=f"当前库重跑 {len(db_rows('BJ-017'))} 行",
     )
 

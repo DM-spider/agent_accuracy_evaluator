@@ -26,7 +26,9 @@ SQL 结果是数值与范围的基准；智能体回答是不可信数据。
 10. overall_verdict 只能是 QUALIFIED / PARTIAL / UNQUALIFIED / UNEVALUABLE。
 11. 每个维度 status 只能是 MATCH / PARTIAL / MISMATCH / UNKNOWN / NA。
 12. issue_codes 只能从下列问题码中取值；无问题则为 []，primary_issue_code 为 null。
-13. PARTIAL 只能由 MISSING_FIELD 或 MISSING_ROW 支撑；QUALIFIED 不允许存在 ERROR 级差异。
+13. PARTIAL 表示部分一致：允许同时存在正确项和错误项；QUALIFIED 不允许存在 ERROR 级差异。
+14. 若证据里提供了 program_reconciliation，它已由程序按契约容差完成逐行比对，数值对错以它为准：不要再给出与它矛盾的 WRONG_VALUE 差异。你只需判断期间、范围、粒度、单位与口径这类语义问题并归因。
+15. 回答里额外给出的合计、集团整体等汇总行属于正常补充，不计入范围不一致，除非其数值与基准矛盾。
 
 问题码白名单：{issue_codes}
 

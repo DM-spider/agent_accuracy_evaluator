@@ -35,14 +35,19 @@ class Chunks(httpx.SyncByteStream):
             raise httpx.ReadTimeout("secret-cookie")
 
 
-def client_for(content, fail=False, calls=None):
+def client_for(content, fail=False, calls=None, **kwargs):
     def handle(request):
         if calls is not None:
             calls.append(json.loads(request.content))
         assert request.headers["cookie"] == "SESSION_ID=secret-cookie"
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Chunks(content, fail))
     return StreamAgentClient(session_id="s", task_id="t", template_id="tpl", org_id="org",
-                             login_session="secret-cookie", transport=httpx.MockTransport(handle))
+                             login_session="secret-cookie", transport=httpx.MockTransport(handle), **kwargs)
+
+
+def failed(message="⚠️ Agent couldn't generate a response."):
+    return frame("response.failed", response={"id": "r", "status": "failed"},
+                 error={"type": "api_error", "message": message})
 
 
 @pytest.fixture
@@ -85,6 +90,61 @@ def test_no_false_completion_or_retry(contract, ctx, ending, fail):
     assert client.ask(contract, ctx).completion_status == "not_sent"
     assert len(calls) == 1 and answer.retries == 0
     assert "secret-cookie" not in answer.model_dump_json()
+
+
+def test_terminal_platform_failure_is_retried_then_succeeds(contract, ctx):
+    calls = []
+
+    def handle(request):
+        calls.append(json.loads(request.content))
+        content = failed() if len(calls) == 1 else done("重试后的答案")
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Chunks(content))
+
+    client = StreamAgentClient(session_id="s", task_id="t", template_id="tpl", org_id="org",
+                               login_session="secret-cookie", retries=2, retry_backoff_seconds=0,
+                               transport=httpx.MockTransport(handle))
+    answer = client.ask(contract, ctx)
+    assert answer.completion_status == "completed" and answer.text == "重试后的答案"
+    assert answer.retries == 1 and len(calls) == 2
+    assert [a["completion_status"] for a in answer.response_body["attempts"]] == ["failed", "completed"]
+    assert answer.response_body["attempts"][0]["error"] == "REMOTE_RESPONSE.FAILED"
+    assert not client.halted
+
+
+def test_retries_exhausted_halts_session(contract, ctx):
+    calls = []
+    client = client_for(failed(), calls=calls, retries=2, retry_backoff_seconds=0)
+    answer = client.ask(contract, ctx)
+    assert answer.completion_status == "failed" and answer.error == "REMOTE_RESPONSE.FAILED"
+    assert answer.retries == 2 and len(calls) == 3
+    assert client.halted
+    assert client.ask(contract, ctx).completion_status == "not_sent"
+    assert len(calls) == 3
+
+
+def test_stream_eof_is_not_retried(contract, ctx):
+    # 平台没给终态时无法确认那轮是否还在执行，重发会被排成新的一轮。
+    calls = []
+    answer = client_for(frame("response.output_text.delta", delta="半截"), calls=calls,
+                        retries=2, retry_backoff_seconds=0).ask(contract, ctx)
+    assert answer.error == "STREAM_EOF_WITHOUT_COMPLETION" and answer.retries == 0
+    assert len(calls) == 1
+
+
+def test_auth_failure_is_not_retried(contract, ctx):
+    calls = []
+
+    def handle(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, headers={"content-type": "application/json"},
+                              content=b'{"respCode":"E201","respMsg":"session missing"}')
+
+    client = StreamAgentClient(session_id="s", task_id="t", template_id="tpl", org_id="org",
+                               login_session="secret-cookie", retries=2, retry_backoff_seconds=0,
+                               transport=httpx.MockTransport(handle))
+    answer = client.ask(contract, ctx)
+    assert answer.error.startswith("STREAM_ERROR:ValueError:NOT_SSE_RESPONSE")
+    assert answer.retries == 0 and len(calls) == 1
 
 
 @pytest.mark.parametrize("bad", [frame("heartbeat", session_id="other"), frame("response.completed", response={"status": "in_progress"})])
@@ -418,8 +478,9 @@ def test_reports_keep_context_and_escape_answer(tmp_path, contract, ctx):
                         enable_watermark=False)
     orch.start_run(ctx)
     html = export_html(repo, ctx.run_id, tmp_path / "report.html").read_text(encoding="utf-8")
-    assert "&lt;script&gt;" in html and "<script>" not in html
-    assert "202607" in html and "未评分" in html
+    # 报告模板自身带内联 <script>，这里只校验回答内容里的脚本被转义。
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html and "<script>alert(1)</script>" not in html
+    assert "202607" in html and "无法评估" in html
     payload = json.loads(export_json(repo, ctx.run_id, tmp_path / "report.json").read_text(encoding="utf-8"))
     assert payload["cases"][0]["alignment"]["sql_params"] == {"period": 202607}
     workbook = load_workbook(export_xlsx(repo, ctx.run_id, tmp_path / "report.xlsx"))

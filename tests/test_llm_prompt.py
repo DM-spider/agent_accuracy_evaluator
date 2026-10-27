@@ -41,7 +41,8 @@ def test_prompt_lists_codes_dimensions_and_schema():
         assert dim in system["content"]
     assert "overall_verdict" in system["content"]
     assert "不要 Markdown" in system["content"]
-    assert "PARTIAL 只能由 MISSING_FIELD 或 MISSING_ROW 支撑" in system["content"]
+    assert "PARTIAL 表示部分一致" in system["content"]
+    assert "program_reconciliation" in system["content"]
 
 
 def test_prompt_trusted_block_excludes_raw_answer():

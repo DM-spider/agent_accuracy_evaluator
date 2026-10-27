@@ -25,14 +25,26 @@ python -m cli_eval.run
 python -m cli_eval.report
 ```
 
-产物：
+三条命令都可以加 `--date YYYYMMDD` 指定版本日期，默认是今天（也接受 `2026-10-27` 写法，会归一成 8 位）。
 
-| 路径 | 内容 |
-|---|---|
-| `cli_eval/out/cli_eval_report.html` | 最终报告（自包含，可直接发给同事） |
-| `cli_eval/out/results.json` | 16 题结构化结果（状态、差异、根因、建议） |
-| `cli_eval/out/raw/` | 每次 CLI 调用的原始 JSON（按命令+参数哈希命名） |
-| `cli_eval/out/golden_db/` | 本次标准值（16 题标准 SQL 在当前库的结果） |
+## 版本管理
+
+结果按日期存放，**一天一个版本**：
+
+```
+cli_eval/out/
+  report_20261027/
+    results.json                       16 题结构化结果
+    cli_eval_report_20261027.html      自包含报告（文件名带日期，方便分享）
+    golden_db/                         当天的标准值快照
+  report_20261026/
+  raw/                                  接口响应缓存，跨版本共用
+```
+
+- 同一天重复运行会**覆盖当天版本**，不会生成第二份。
+- `python -m cli_eval.report --list` 列出已有版本。
+- `python -m cli_eval.report --date 20261026` 用某一版的数据重出报告。
+- 版本目录按日期排序，最后一个是最近一次；`out/` 下只有版本目录和 `raw/`，不放散文件。
 
 ## 结论口径
 
@@ -42,7 +54,7 @@ python -m cli_eval.report
 - `VALUE_DIFF`：CLI 与标准值有数值差异。
 - `CALIBER_DIFF`：差异来自口径（如当月水量用累计差、标准值用单月快照），不是数据错。
 - `PARTIAL`：部分列可对，部分列缺字段/缺命令/缺维度。
-- `BLOCKED`：命令无法执行（本次是 commandCode > 32 字符的 E101）。
+- `BLOCKED`：命令确实调不通（保留状态码，不再出现"长命令被截断"这类旧说法）。
 
 ## 加一道题
 
@@ -61,3 +73,4 @@ python -m cli_eval.report
 - `invoke` 不校验 `respCode`，退出码仍为 0；必须以返回体里的 `respCode` 为准。
 - 只调用读取命令；不要调用 `ai_advice_save`、`alert_water_balance`。
 - 原始响应缓存会命中，重跑不会重复请求；需要重新实调时删掉 `out/raw/` 对应文件。
+- `golden_db/` 属于当天版本。新的一天如果没先跑 `check_golden_db.py`，标准值会退回黄金集里的静态结果，`run.py` 会打印提醒。

@@ -43,7 +43,7 @@ def entry(case_id="CX-1", verdict="UNQUALIFIED", **extra):
     }
 
 
-def test_export_uses_live_verdicts_readable_evidence_and_escapes_html(tmp_path, monkeypatch):
+def test_export_uses_live_verdicts_and_escapes_html(tmp_path, monkeypatch):
     repo = ReportRepo(tmp_path, [entry()])
     monkeypatch.setattr("evaluator.exporter.load_contracts", lambda: [])
     destination = tmp_path / "report.html"
@@ -53,7 +53,9 @@ def test_export_uses_live_verdicts_readable_evidence_and_escapes_html(tmp_path, 
     assert "已返回回答 1 / 计划 1 题" in html
     assert "-784,379" in html and "-31.2%" in html
     assert "2,515,137" in html and "202601" in html
-    assert "原始核验证据" in html
+    # 差异明细只保留说明，不再把模型的原始核验证据折叠进来
+    assert "查看核验证据" not in html
+    assert "原始核验证据" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "<script>alert(1)</script>" not in html
     assert "PRIVATE_COOKIE" not in html
@@ -120,3 +122,43 @@ def test_existing_export_endpoint_returns_new_report(tmp_path, monkeypatch):
     assert 'filename="report.html"' in response.headers["content-disposition"]
     assert "回答合格率" in response.text
     assert "标准化差值" in response.text
+
+
+def _ratio_contract():
+    from evaluator.models import CaseContract, MeasureSpec, Tolerance
+
+    return CaseContract(
+        case_id="CX-T",
+        question="各单位产销差率？",
+        result_type="detail",
+        numeric_evaluable=True,
+        row_key=["组织"],
+        measures={
+            "产销差率": MeasureSpec(
+                label="产销差率", unit="%", value_scale="ratio01", sql_column="产销差率",
+                tolerance=Tolerance(kind="abs", eps=0.01),
+            )
+        },
+    )
+
+
+def test_comparison_puts_both_sides_in_the_same_unit():
+    from evaluator.report_html import comparison_html
+
+    answer = "| 单位 | 产销差率 |\n|---|---|\n| 南山分公司 | 12.02 |\n| 福田分公司 | 6.70 |\n"
+    snapshot = {"rows": [{"组织": "南山分公司", "产销差率": 0.1202}, {"组织": "福田分公司", "产销差率": 0.0665}]}
+    html = comparison_html(_ratio_contract().model_dump(mode="json"), answer, snapshot)
+    # 左（回答）与右（基准）都换算成百分数，同一行同一量纲
+    assert html.count("12.02") == 2
+    assert html.count("6.65") == 1
+    assert "cell-miss" in html  # 6.70 vs 6.65 超出 0.01 容差
+    assert "智能体回答" in html and "标准答案（SQL 基准）" in html
+
+
+def test_comparison_falls_back_to_raw_answer_without_a_table():
+    from evaluator.report_html import comparison_html
+
+    snapshot = {"rows": [{"组织": "南山分公司", "产销差率": 0.1202}]}
+    html = comparison_html(_ratio_contract().model_dump(mode="json"), "南山分公司产销差率 12.02%。", snapshot)
+    assert "report-answer" in html
+    assert "12.02" in html

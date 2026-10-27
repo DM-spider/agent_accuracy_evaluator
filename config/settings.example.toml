@@ -70,4 +70,8 @@ curl = '''
 enabled = true
 read_timeout_seconds = 180
 total_timeout_seconds = 600
+# 平台明确返回 response.failed 等终态失败时重发整轮，两次尝试之间等这么多秒。
+# 断流（没收到 response.completed）不重发：那轮可能仍在服务端执行。
+retries = 2
+retry_backoff_seconds = 5
 trust_env = false

@@ -9,7 +9,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from evaluator.answer_context import align_answer, params_for_period
 from evaluator.llm_evidence import DEFAULT_MAX_INPUT_CHARS, build_evaluation_evidence
-from evaluator.llm_evaluation import unevaluable_artifact, validate_numeric_differences
+from evaluator.llm_evaluation import apply_reconciliation, unevaluable_artifact, validate_numeric_differences
+from evaluator.reconcile import reconcile
 from evaluator.models import (
     AgentAnswer,
     CaseContract,
@@ -269,6 +270,7 @@ class Orchestrator:
         extract_text: str,
         sql_snapshot: Optional[SqlSnapshot],
         alignment: Dict[str, Any],
+        reconciliation: Optional[Dict[str, Any]] = None,
     ):
         max_chars = int(getattr(self.llm_evaluator, "max_input_chars", DEFAULT_MAX_INPUT_CHARS) or DEFAULT_MAX_INPUT_CHARS)
         evidence = build_evaluation_evidence(
@@ -276,6 +278,7 @@ class Orchestrator:
             answer_text=extract_text,
             sql_snapshot=sql_snapshot,
             alignment=alignment,
+            reconciliation=reconciliation,
             max_input_chars=max_chars,
         )
         model = str(getattr(self.llm_evaluator, "model", "") or "")
@@ -288,23 +291,23 @@ class Orchestrator:
             prompt_version=prompt_version,
         )
         if reusable:
-            return LlmEvaluationArtifact.model_validate(reusable), True
+            return apply_reconciliation(contract, LlmEvaluationArtifact.model_validate(reusable), reconciliation), True
         if self.llm_evaluator is None:
-            return unevaluable_artifact(
+            return apply_reconciliation(contract, unevaluable_artifact(
                 "LLM_CALL_FAILED",
                 "评估 LLM 未配置，本题无法自动评估",
                 input_hash=evidence.input_hash,
-            ), False
+            ), reconciliation), False
         try:
             artifact = self.llm_evaluator.evaluate(evidence, contract)
         except Exception as exc:  # 单题 LLM 失败不能中断整批
-            return unevaluable_artifact(
+            return apply_reconciliation(contract, unevaluable_artifact(
                 "LLM_CALL_FAILED",
                 f"评估 LLM 调用异常：{type(exc).__name__}",
                 input_hash=evidence.input_hash,
                 error=type(exc).__name__,
-            ), False
-        return validate_numeric_differences(contract, artifact), False
+            ), reconciliation), False
+        return apply_reconciliation(contract, validate_numeric_differences(contract, artifact), reconciliation), False
 
     def _run_one(self, run_context: RunContext, contract: CaseContract, turn: int = 0) -> CaseResult:
         logs: Dict[str, Any] = {"retries": 0, "exceptions": []}
@@ -388,8 +391,20 @@ class Orchestrator:
             alignment["fallback_reason"] = alignment.get("fallback_reason") or "requested_period_no_data"
             alignment["effective_period"] = alignment.get("effective_period") or alignment.get("sql_period")
 
-        # 结论来源：LLM 结构化评估；失败保存 UNEVALUABLE。
-        artifact, reused = self._evaluate_with_llm(run_context, contract, extract_text, sql_snapshot, alignment)
+        # 程序先按契约容差逐行比对，数值对错由它决定；LLM 只补充语义层判断。
+        report = reconcile(contract, extract_text, sql_snapshot.rows if sql_snapshot else [], params)
+        alignment["reconciliation"] = {
+            key: report.get(key)
+            for key in ("available", "reason", "sql_rows", "answer_rows", "matched_rows",
+                        "checked_values", "hit_values", "row_hit_rate", "value_hit_rate")
+        }
+        alignment["reconciliation"]["missing_rows"] = [item.get("key") for item in report.get("missing_rows") or []][:12]
+        alignment["reconciliation"]["extra_rows"] = [item.get("key") for item in report.get("extra_rows") or []][:12]
+
+        # 结论来源：程序比对 + LLM 结构化评估；失败保存 UNEVALUABLE。
+        artifact, reused = self._evaluate_with_llm(
+            run_context, contract, extract_text, sql_snapshot, alignment, report
+        )
         if not reused:
             self.repo.save_llm_evaluation(run_context.run_id, contract.case_id, artifact)
         result = result_from_llm_evaluation(contract, artifact)

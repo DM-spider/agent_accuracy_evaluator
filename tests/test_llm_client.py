@@ -164,3 +164,54 @@ def test_disabled_or_unconfigured_returns_unevaluable():
     assert len(calls) == 0
     client2 = LlmEvaluator({"enabled": True, "model": "m"}, transport=httpx.MockTransport(lambda r: response_with(content())))
     assert client2.evaluate(evidence()).evaluation.primary_issue_code == "LLM_CALL_FAILED"
+
+
+def test_offlist_issue_codes_do_not_void_the_verdict():
+    """判分模型自造的问题码（VALUE_MISMATCH）不应该把整题判成无法评估。"""
+    raw = json.dumps(
+        {
+            "overall_verdict": "UNQUALIFIED",
+            "confidence": 0.9,
+            "summary": "5 月供水量不符",
+            "issue_codes": ["VALUE_MISMATCH"],
+            "primary_issue_code": "VALUE_MISMATCH",
+            "dimensions": {key: {"status": "MATCH", "reason": ""} for key in REQUIRED_DIMENSIONS},
+            "differences": [
+                {"type": "ROW_COVERAGE_MISMATCH", "severity": "ERROR", "field": "供水量", "explanation": "x"}
+            ],
+            "needs_human_review": False,
+        },
+        ensure_ascii=False,
+    )
+    client, calls = evaluator(lambda request: response_with(raw))
+    artifact = client.evaluate(evidence())
+    assert len(calls) == 1
+    assert artifact.evaluation.overall_verdict.value == "UNQUALIFIED"
+    assert artifact.evaluation.issue_codes == ["WRONG_VALUE"]
+    assert artifact.evaluation.differences[0].type == "MISSING_ROW"
+
+
+def test_truncated_output_retries_with_larger_budget():
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content)["max_tokens"])
+        if len(seen) == 1:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "{\"overall_verdict\":"}, "finish_reason": "length"}]},
+            )
+        return response_with(content())
+
+    client, _ = evaluator(handler, retries=1, max_output_tokens=1000)
+    artifact = client.evaluate(evidence())
+    assert artifact.evaluation.overall_verdict.value == "QUALIFIED"
+    assert seen[1] > seen[0]
+
+
+def test_invalid_response_keeps_raw_content():
+    client, _ = evaluator(lambda request: response_with("{\"overall_verdict\":\"QUALIFIED\"}"))
+    artifact = client.evaluate(evidence())
+    assert artifact.evaluation.primary_issue_code == "LLM_RESPONSE_INVALID"
+    assert artifact.raw_response
+    assert "QUALIFIED" in artifact.raw_response

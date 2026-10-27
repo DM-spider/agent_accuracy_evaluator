@@ -106,7 +106,8 @@ class StreamAgentClient:
     def __init__(self, *, session_id: str, task_id: str, template_id: str, org_id: str,
                  login_session: str, task_name: str = "leakage-skill", url: str = STREAM_URL,
                  origin: str = "", referer: str = "", payload: dict | None = None,
-                 read_timeout: float = 60, total_timeout: float = 300, trust_env: bool = False, transport=None):
+                 read_timeout: float = 60, total_timeout: float = 300, retries: int = 0,
+                 retry_backoff_seconds: float = 5.0, trust_env: bool = False, transport=None):
         self.url = url or STREAM_URL
         # 同源头随地址走：平台换域名时这里自动跟随，避免 Origin/Referer 与目标站点不一致被拒。
         site = site_origin(self.url)
@@ -121,6 +122,9 @@ class StreamAgentClient:
         self.task_name = task_name
         self.read_timeout = read_timeout
         self.total_timeout = total_timeout
+        # 只有平台明确回终态失败才重发；断流时服务端可能仍在跑，重发会被排队成新的一轮。
+        self.retries = max(0, int(retries or 0))
+        self.retry_backoff_seconds = max(0.0, float(retry_backoff_seconds or 0))
         self.transport = transport
         self.trust_env = trust_env
         self.halted = False
@@ -140,6 +144,30 @@ class StreamAgentClient:
             answer.error = "PLATFORM_NOT_CONFIGURED"
             answer.completion_status = "not_sent"
             return answer
+        attempts = []
+        for index in range(self.retries + 1):
+            if index:
+                time.sleep(self.retry_backoff_seconds)
+            answer = self._ask_once(case, run_context)
+            attempts.append({"attempt": index + 1, "completion_status": answer.completion_status,
+                             "error": answer.error, "latency_ms": answer.latency_ms})
+            if not self._retryable(answer):
+                break
+        answer.retries = len(attempts) - 1
+        answer.timings["attempts"] = len(attempts)
+        answer.response_body["attempts"] = attempts
+        if answer.completion_status != "completed" or answer.error:
+            self.halted = True
+        self.uncertain = answer.completion_status == "unknown"
+        return answer
+
+    def _retryable(self, answer: AgentAnswer) -> bool:
+        """平台已明确结束这一轮且没有产出时才重发；断流和鉴权失败都不重发。"""
+        return answer.completion_status == "failed" and str(answer.error or "").startswith("REMOTE_RESPONSE.")
+
+    def _ask_once(self, case: CaseContract, run_context: RunContext) -> AgentAnswer:
+        answer = AgentAnswer(case_id=case.case_id, question=case.question, http_url=self.url,
+                             http_status=0, completion_status="unknown")
         body = dict(self.payload)
         body.update(sessionId=self.session_id, taskId=self.task_id, templateId=self.template_id,
                     taskName=self.task_name, message=case.question)
@@ -249,9 +277,6 @@ class StreamAgentClient:
             timings["transport_total_ms"] = elapsed()
             timings["finished_at"] = datetime.now(timezone.utc).isoformat()
             answer.timings = timings
-            if answer.completion_status != "completed" or answer.error:
-                self.halted = True
-            self.uncertain = answer.completion_status == "unknown"
             answer.response_body = {"answer": answer.text, "completion_status": answer.completion_status,
                                     "response_id": response_id, "event_counts": dict(counts),
                                     "events": events, "timings": timings, "time_hints": time_hints,

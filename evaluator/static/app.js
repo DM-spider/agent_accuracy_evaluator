@@ -134,6 +134,24 @@ function infoRows(entries) {
   return `<dl class="info-rows">${entries.map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value ?? "未记录")}</dd></div>`).join("")}</dl>`;
 }
 
+// 程序按契约容差做的逐行比对。不可比时说明原因，由 LLM 语义判分兜底。
+function reconciliationRows(recon) {
+  if (!recon) return '<p class="empty">本条结果产生于程序复核上线前，重跑后可看到</p>';
+  if (!recon.available) {
+    const reason = {no_table: "回答里没有可解析的表格", no_sql_rows: "基准没有返回数据", no_measure_columns: "表头对不上契约指标", no_row_key: "契约缺少行键"}[recon.reason] || recon.reason;
+    return `<p class="empty">未做逐行比对：${escapeHtml(reason || "不可比")}</p>`;
+  }
+  const pct = value => (value === null || value === undefined ? "—" : `${Math.round(value * 1000) / 10}%`);
+  return infoRows([
+    ["行命中", `${recon.matched_rows ?? 0} / ${recon.sql_rows ?? 0}`],
+    ["数值命中", `${recon.hit_values ?? 0} / ${recon.checked_values ?? 0}`],
+    ["行命中率", pct(recon.row_hit_rate)],
+    ["数值命中率", pct(recon.value_hit_rate)],
+    ["缺失行", (recon.missing_rows || []).join("、") || "无"],
+    ["多出行", (recon.extra_rows || []).join("、") || "无"],
+  ]);
+}
+
 // psycopg/pg8000 的错误是字典（M 是消息），直接 escapeHtml 只会得到 [object Object]。
 function errorText(value) {
   if (!value || typeof value !== "object") return value;
@@ -565,7 +583,8 @@ async function renderCase() {
     ${(logs.exceptions || []).length ? `<details><summary>异常类型 · ${logs.exceptions.length}</summary><pre>${escapeHtml(JSON.stringify(logs.exceptions, null, 2))}</pre></details>` : ""}</section>
     <section><h3>SQL 查询</h3>${infoRows([["查询状态", sql.error ? "失败" : sql.columns ? "完成" : "未执行"], ["查询耗时", sql.columns ? duration(sql.latency_ms) : "未记录"], ["结果行数", (sql.rows || []).length], ["补查次数", rechecks.length], ["查询错误", errorText(sql.error)]])}
     ${(alignment.sql_attempts || []).length ? `<details><summary>时间回退记录</summary><pre>${escapeHtml(JSON.stringify(alignment.sql_attempts, null, 2))}</pre></details>` : ""}
-    </section></div>`;
+    </section>
+    <section><h3>程序复核</h3>${reconciliationRows(alignment.reconciliation)}</section></div>`;
   document.querySelectorAll(".tabs button").forEach(btn => btn.addEventListener("click", () => {
     document.querySelectorAll(".tabs button").forEach(b => b.classList.remove("active"));
     document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));

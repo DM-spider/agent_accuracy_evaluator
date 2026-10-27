@@ -1,0 +1,1225 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>漏损智能体 CLI 接口对账报告</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --text: #1d2939; --muted: #667085;
+    --line: #e4e7ec; --soft: #f9fafb;
+    --pass: #067647; --pass-bg: #ecfdf3;
+    --fail: #b42318; --fail-bg: #fef3f2;
+    --warn: #b54708; --warn-bg: #fffaeb;
+    --partial: #175cd3; --partial-bg: #eff8ff;
+    --stale: #6941c6; --stale-bg: #f4f3ff;
+    --blocked: #475467; --blocked-bg: #f2f4f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px; line-height: 1.65;
+  }
+  .page { max-width: 1240px; margin: 0 auto; padding: 36px 24px 64px; }
+  header { margin-bottom: 24px; }
+  h1 { font-size: 26px; margin: 0 0 8px; letter-spacing: -.02em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .sub span { margin-right: 18px; white-space: nowrap; }
+  .cards { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin: 22px 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card .num { font-size: 26px; font-weight: 700; line-height: 1.1; }
+  .card .label { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .card.pass .num { color: var(--pass); } .card.fail .num { color: var(--fail); }
+  .card.warn .num { color: var(--warn); } .card.partial .num { color: var(--partial); }
+  .card.blocked .num { color: var(--blocked); }
+  section { margin-top: 30px; }
+  h2 { font-size: 18px; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 15px; margin: 22px 0 8px; }
+  h4 { font-size: 13px; color: var(--muted); margin: 18px 0 8px; font-weight: 600; }
+  p { margin: 6px 0; }
+  .lead { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--partial); border-radius: 8px; padding: 14px 18px; }
+  .note { background: var(--soft); border: 1px dashed var(--line); border-radius: 8px; padding: 10px 14px; color: #344054; font-size: 13px; }
+  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .table-wrap.wide table { min-width: 1080px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--soft); color: var(--muted); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.q { min-width: 220px; }
+  td:first-child, th:first-child { white-space: nowrap; }
+  td.diff { color: var(--fail); min-width: 200px; font-weight: 500; }
+  td.sum { color: #344054; font-weight: 500; white-space: nowrap; }
+  .diff-expected { color: var(--partial); font-variant-numeric: tabular-nums; }
+  .diff-actual { color: var(--fail); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .diff-delta { color: var(--warn); font-weight: 700; font-variant-numeric: tabular-nums; }
+  td.issue { font-weight: 600; min-width: 180px; }
+  td.params { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: var(--muted); }
+  code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; background: var(--soft); padding: 1px 5px; border-radius: 4px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .badge.pass { color: var(--pass); background: var(--pass-bg); }
+  .badge.fail { color: var(--fail); background: var(--fail-bg); }
+  .badge.warn { color: var(--warn); background: var(--warn-bg); }
+  .badge.partial { color: var(--partial); background: var(--partial-bg); }
+  .badge.stale { color: var(--stale); background: var(--stale-bg); }
+  .badge.blocked { color: var(--blocked); background: var(--blocked-bg); }
+  .case { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+  .case > summary { cursor: pointer; padding: 12px 16px; display: flex; align-items: center; gap: 10px; list-style: none; }
+  .case > summary::-webkit-details-marker { display: none; }
+  .case-id { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-weight: 700; min-width: 62px; }
+  .case-q { flex: 1; }
+  .case-summary { color: var(--muted); font-size: 12px; white-space: nowrap; max-width: 380px; overflow: hidden; text-overflow: ellipsis; }
+  .case-body { padding: 4px 18px 20px; border-top: 1px solid var(--line); }
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; align-items: start; padding-top: 16px; }
+  .compare-grid > .col { min-width: 0; padding: 0 18px; }
+  .compare-grid > .col:first-child { padding-left: 0; }
+  .compare-grid > .col:last-child { padding-right: 0; border-left: 1px solid var(--line); }
+  .compare-grid h4 { margin-top: 0; }
+  .compare-grid .cli h4 { color: var(--fail); }
+  .compare-grid .std h4 { color: var(--partial); }
+  .compare-grid .table-wrap table { font-size: 12px; }
+  .compare-grid th, .compare-grid td { padding: 7px 9px; }
+  .compare-grid .empty { background: var(--soft); border: 1px dashed var(--line); border-radius: 8px; padding: 18px; text-align: center; }
+  .case-body > h4 { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .meta-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 18px; margin: 0; padding: 12px 0 14px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .meta-label { color: var(--muted); margin-right: 8px; }
+  .col { min-width: 0; }
+  .summary-line { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .root { background: var(--warn-bg); border-left: 3px solid var(--warn); padding: 10px 14px; border-radius: 6px; }
+  .recommend { background: var(--partial-bg); border-left: 3px solid var(--partial); padding: 10px 14px; border-radius: 6px; }
+  .evidence { margin: 6px 0; padding-left: 20px; color: #344054; }
+  .evidence li { margin: 3px 0; }
+  pre.cmd, pre.sql { margin: 0 0 8px; padding: 12px 14px; background: #1d2939; color: #e4e7ec; border-radius: 8px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+  pre.cmd code, pre.sql code { background: transparent; color: inherit; padding: 0; border-radius: 0; font-size: inherit; }
+  pre.cmd { max-height: 240px; }
+  pre.sql { max-height: 420px; }
+  .cmd-note { color: var(--muted); font-size: 12px; margin: 2px 0 10px; }
+  .empty { color: var(--muted); }
+  .ok { color: var(--pass); }
+  .more { color: var(--muted); font-size: 12px; padding: 6px 10px; }
+  footer { margin-top: 36px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
+  @media (max-width: 900px) {
+    .cards { grid-template-columns: repeat(2, 1fr); }
+    .meta-grid { grid-template-columns: 1fr; }
+    .compare-grid { grid-template-columns: 1fr; }
+    .compare-grid > .col { padding: 0; }
+    .compare-grid > .col:last-child { border-left: 0; border-top: 1px solid var(--line); padding-top: 14px; margin-top: 14px; }
+    .case-summary { display: none; }
+  }
+  @media print {
+    body { background: #fff; }
+    .page { max-width: none; padding: 0; }
+    .case { break-inside: avoid; }
+    details { open: true; }
+    .table-wrap { overflow: visible; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>漏损智能体 CLI 接口对账报告</h1>
+    <div class="sub">
+      <span>对象：leakage-agent-cli（authority + invoke）</span>
+      <span>范围：16 道业务核对题</span>
+      <span>版本：20261027</span>
+      <span>生成时间：2026-10-27 14:16:31</span>
+    </div>
+  </header>
+
+  <div class="cards"><div class="card neutral"><div class="num">16</div><div class="label">题目总数</div></div><div class="card pass"><div class="num">6</div><div class="label">通过</div></div><div class="card fail"><div class="num">5</div><div class="label">数值不符</div></div><div class="card warn"><div class="num">1</div><div class="label">口径不符</div></div><div class="card partial"><div class="num">4</div><div class="label">部分可测</div></div><div class="card blocked"><div class="num">0</div><div class="label">接口阻塞</div></div></div>
+
+  <p class="note">
+    <strong>口径：</strong>本次测试的标准值 = 用原标准 SQL 在当前库跑出的结果；CLI 为本次实调。
+    每题只比两列：CLI 实测 vs 标准值。字段、容差沿用题目的 value_fields / tolerance。
+  </p>
+
+  <p class="lead">结论：16 题中 <strong>6 题通过</strong>（CX-033、CX-037、BJ-017、DMA-002、JL-016、BJ-012），<strong>5 题数值不符</strong>（BJ-003、BJ-016、JL-019、JL-021、JL-022），<strong>1 题口径不符</strong>（CX-032），<strong>4 题部分可测</strong>（CX-036、JL-018、JL-036、DMA-026），本轮没有被网关阻塞的题。可比对的题里，累计类指标（year_cum_diff_rate）质量最好；问题集中在月度量口径、预警明细行集和缺失字段。</p>
+
+  <section>
+    <h2>一、16 题总表</h2>
+    <div class="table-wrap wide">
+      <table>
+        <thead><tr><th>题号</th><th>问题</th><th>结论</th><th>CLI 结果</th><th>标准值</th><th>主要差异</th></tr></thead>
+        <tbody><tr><td><a href='#CX-033'><strong>CX-033</strong></a></td><td class='q'>2026年1月至6月，福田分公司每个月累计产销差率较上月的环比变化是多少？</td><td><span class="badge pass">通过</span></td><td class='sum'>福田 1–6 月累计率</td><td class='sum'>6 期累计率</td><td class='diff'></td></tr><tr><td><a href='#CX-032'><strong>CX-032</strong></a></td><td class='q'>2026年1月至5月，盐田分公司每个月的供水量、售水量和产销差水量分别是多少？</td><td><span class="badge warn">口径不符</span></td><td class='sum'>盐田 1–5 月供/售/差</td><td class='sum'>5 期供/售/差</td><td class='diff'>「202605」供水量: 标准 2429789.0 / CLI 2498583.0</td></tr><tr><td><a href='#CX-036'><strong>CX-036</strong></a></td><td class='q'>2026年1月至5月，全集团各单位的年累计产销差率月度趋势是怎样的？</td><td><span class="badge partial">部分可测</span></td><td class='sum'>15 个单位 × 5 个月</td><td class='sum'>16 个组织 × 5 个月</td><td class='diff'>「宝安水务集团」缺少字段「2月」</td></tr><tr><td><a href='#CX-037'><strong>CX-037</strong></a></td><td class='q'>2026上半年各单位的年累计产销差率较2025上半年同比变化是多少？</td><td><span class="badge pass">通过</span></td><td class='sum'>15 个单位同比</td><td class='sum'>15 个组织同比</td><td class='diff'></td></tr><tr><td><a href='#JL-018'><strong>JL-018</strong></a></td><td class='q'>列出上月各单位消防栓维修工单数量、排放水量和漏失水量合计。</td><td><span class="badge partial">部分可测</span></td><td class='sum'>1007 条维修工单</td><td class='sum'>12 个组织 × 3 列</td><td class='diff'>fire_hydrant_maintenance_work 返回字段中无 discharge_water</td></tr><tr><td><a href='#JL-036'><strong>JL-036</strong></a></td><td class='q'>列出各单位2026年6月单月产销差率和2026年7月检漏工单数量。</td><td><span class="badge partial">部分可测</span></td><td class='sum'>单月率 15 个单位；检漏数缺</td><td class='sum'>14 个组织 × 2 列</td><td class='diff'>「布吉水司」单月产销差率: 标准 1.0 / CLI 0.0983</td></tr><tr><td><a href='#BJ-003'><strong>BJ-003</strong></a></td><td class='q'>上月夜间小流量预警频次最高的前10个小区 DMA 分别是哪些？列出编码、名称、单位和预警次数。</td><td><span class="badge fail">数值不符</span></td><td class='sum'>558 条 / TOP10</td><td class='sum'>10 个 DMA</td><td class='diff'>「300045」预警次数: 标准 29.0 / CLI 28.0</td></tr><tr><td><a href='#BJ-016'><strong>BJ-016</strong></a></td><td class='q'>上月产生的漏损预警中，预警总数、未处理数和超过10天未处理数分别是多少？</td><td><span class="badge fail">数值不符</span></td><td class='sum'>11308 / 8663 / 6221</td><td class='sum'>11558 / 1 / 1</td><td class='diff'>预警总数: 标准 11558.0 / CLI 11308.0</td></tr><tr><td><a href='#BJ-017'><strong>BJ-017</strong></a></td><td class='q'>按管径分段列出上月爆管事件在各单位的发生情况，并下钻到三级部门。</td><td><span class="badge pass">通过</span></td><td class='sum'>56 组（管径×单位）</td><td class='sum'>27 行（含三级部门）</td><td class='diff'></td></tr><tr><td><a href='#DMA-002'><strong>DMA-002</strong></a></td><td class='q'>列出各单位目前在用的居民小区 DMA 数量及在全集团的占比。</td><td><span class="badge pass">通过</span></td><td class='sum'>5675 条 / 12 个组织</td><td class='sum'>5675 条 / 12 个组织</td><td class='diff'></td></tr><tr><td><a href='#DMA-026'><strong>DMA-026</strong></a></td><td class='q'>各单位2026年6月的DMA漏损量、DMA小区数及上半年产销差率分别是多少？</td><td><span class="badge partial">部分可测</span></td><td class='sum'>率 15 个单位；漏损/小区数缺</td><td class='sum'>15 个组织 × 3 列</td><td class='diff'></td></tr><tr><td><a href='#JL-016'><strong>JL-016</strong></a></td><td class='q'>上月各单位供水管道维修工单记录的漏损水量合计是多少立方米？</td><td><span class="badge pass">通过</span></td><td class='sum'>工单可调取；漏损量字段缺</td><td class='sum'>13 行</td><td class='diff'></td></tr><tr><td><a href='#JL-019'><strong>JL-019</strong></a></td><td class='q'>上月创建的最新10条检漏工单分别是哪些？列出工单编号、所属单位、标题和创建时间。</td><td><span class="badge fail">数值不符</span></td><td class='sum'>7 月最新 10 条</td><td class='sum'>10 行</td><td class='diff'>CLI 未返回「WS20260731Y2320」</td></tr><tr><td><a href='#JL-021'><strong>JL-021</strong></a></td><td class='q'>上月各单位有到场记录的检漏工单平均响应时间分别是多少小时？</td><td><span class="badge fail">数值不符</span></td><td class='sum'>按组织平均响应</td><td class='sum'>6 行</td><td class='diff'>CLI 未返回「光明水务集团」</td></tr><tr><td><a href='#JL-022'><strong>JL-022</strong></a></td><td class='q'>上月各单位检漏工单完成率对标情况如何？列出各单位工单总数、完成数和完成率。</td><td><span class="badge fail">数值不符</span></td><td class='sum'>按组织完成率</td><td class='sum'>6 行</td><td class='diff'>CLI 未返回「光明水务集团」</td></tr><tr><td><a href='#BJ-012'><strong>BJ-012</strong></a></td><td class='q'>截至基准日，今年内各单位反复维修超过2次的供水管道有哪些？列出管道编码、单位、地址和维修次数。</td><td><span class="badge pass">通过</span></td><td class='sum'>反复维修&gt;2 次</td><td class='sum'>166 行</td><td class='diff'></td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>二、接口级问题与优化点</h2>
+    <p class="summary-line">按责任方归类。每条都对应本次实测证据，可直接拆给同事跟进。</p>
+    <div class="table-wrap wide"><table><thead><tr><th>责任方</th><th>问题</th><th>实测证据</th><th>影响</th><th>优化建议</th></tr></thead><tbody><tr><td>网关 / 平台</td><td class='issue'>长命令码限制已解除，原先 5 题「阻塞」已恢复可测</td><td>2026-10-27 实测 water_supply_pipe_maintenance_work（34 字符）、leak_detection_and_verification_work（36 字符）均返回 SUCCESS（250,877 / 266 行），10/21 的 E101 不再出现；JL-016、BJ-017 改走实跑后与标准值完全一致。</td><td>10/21 报告里「5 题被网关阻塞」的结论已失效，实际都可对账。</td><td>脚本已改为实跑；后续遇到 invoke 失败以 respCode 为准，不要再预设长度限制。</td></tr><tr><td>字段补齐</td><td class='issue'>维修工单明细分页返回的字段集不一致</td><td>water_supply_pipe_maintenance_work 7 月 180 页里，17 页所有行都带 water_leakage、114 页完全不返回该键、49 页部分行有；caliber 也时有时无（3405 条里 881 条为空）。</td><td>客户端不能假设字段固定存在，聚合时必须把缺字段当空值，否则会漏算或直接 KeyError。</td><td>统一返回字段：缺值返回 null 而不是省略键；或在文档里写清哪些字段按数据源条件返回。</td></tr><tr><td>网关 / 平台</td><td class='issue'>startDate / endDate 一传就报 1002</td><td>month_diff_water + startDate=202601&amp;endDate=202605 → respCode 1002；不传日期则 SUCCESS 并返回全部 21 期。</td><td>所有指标命令无法按期间取数，只能拉全量后客户端过滤；分页量从 1 页涨到 4 页，工单/预警类更是上百页。</td><td>让日期参数真正生效；如果短期做不到，请从 authority 的 params 里移除，避免调用方按文档传参直接失败。</td></tr><tr><td>网关 / 平台</td><td class='issue'>指标与明细的响应外层不一致</td><td>指标：data.data.list + total/pageCount，pageNo 从 0 起；明细：data.data.result + totalRows/totalPage，pageNumber 从 1 起。</td><td>同一套适配器必须按命令类型走两条解析/分页路径，容易漏翻页或取错数组。</td><td>统一为 data.list/data.result 二选一并写进正式 schema；至少把分页起止页在文档里按命令类型标清楚。</td></tr><tr><td>网关 / 平台</td><td class='issue'>业务失败仍返回 HTTP 200，CLI 退出码为 0</td><td>respCode=1002 时，CLI 仍正常打印 JSON 且 exitCode=0；invoke 不校验 respCode，只有 authority 校验。</td><td>批处理会把失败当成功，报告出现假通过。</td><td>CLI 在 invoke 里校验 respCode，非 SUCCESS 返回非 0；或至少在 stdout 里固定加 success 字段。</td></tr><tr><td>题目口径</td><td class='issue'>DMA-002 的标准 SQL 未按「居民小区」过滤</td><td>CLI status=WORK 全量 5,679 条；加 dmatype=RESIDENT 后 2,110 条。题目问的是「居民小区 DMA」，标准 SQL 只按 status=&#x27;WORK&#x27;。</td><td>按当前标准值 DMA-002 判通过（5,679 = 5,679），但口径与题面不符；智能体答 2,110 反而更贴合题目。</td><td>确认题目要的是居民小区 DMA 还是全部 DMA；若为前者，标准 SQL 需加 dmatype=&#x27;RESIDENT&#x27; 并重算这道题。</td></tr><tr><td>指标口径</td><td class='issue'>月度量用累计差，标准值用单月快照</td><td>month_product/month_consume/month_diff_rate 用 SzwgBusinessYear 累计相减；标准值用 SzwgBusiness 单月。盐田 202605 供水 CLI 2,498,583 / 库 2,429,789；202606 单月率 CLI 12.92% / 库 10.35%。</td><td>CX-032 的 202605、JL-036 的 8 个单位出现口径差异；不是数据错，是口径没定稿。</td><td>产品/业务确认「当月」到底取哪套值；定稿后 CLI 和标准集同时改，不能一边单月、一边累计差。</td></tr><tr><td>指标口径</td><td class='issue'>yeardiff（人工录入）与 year_cum_diff_rate（公式）并存且差异大</td><td>福田 202602：yeardiff=0.036，year_cum_diff_rate=-0.0918；16 题标准值与公式命令一致。</td><td>新映射表备注「yeardiff，不是 year_cum_diff_rate」与业务核对结果冲突，按备注迁会直接错。</td><td>明确看板「年累计产销差率」到底展示哪个 KPI；若两者都要保留，命令名必须能区分，禁止同名混用。</td></tr><tr><td>指标口径</td><td class='issue'>率的小数尺度不统一</td><td>year_cum_diff_rate / month_diff_rate 返回 0.0936（0–1）；leakage_analysis_information.totaldiffrate 返回 2.828（0–100）。</td><td>同一个适配器里两种尺度，乘 100 与否会直接造成 100 倍误差。</td><td>在 authority 的返回契约里给每个指标标 scale（ratio01 / percent）；或统一全部改成 0–1。</td></tr><tr><td>指标口径</td><td class='issue'>momValue / yoyValue 是上期值，不是变化值</td><td>month_diff_water 202608：statValue=-181185，momValue=2727989（202607 的值）；year_cum_diff_rate 202608：momValue=0.1063（202607 的率）。</td><td>直接拿 momValue 当环比会得到完全错误的结论。</td><td>字段改名为 prevValue / lastYearValue，或在文档里明确「环比需自行相减」。</td></tr><tr><td>字段补齐</td><td class='issue'>消防栓维修明细缺排放水量 / 漏失水量</td><td>fire_hydrant_maintenance_work 7 月 1007 条，字段清单无 discharge_water / water_leakage；fire_hydrant_flushing_report 是另一张上报表（7 月 6 条）。</td><td>JL-018 只能核对维修单数，两列水量不可核。</td><td>在消防栓维修明细补 discharge_water、water_leakage；若排放量来自上报表，请提供工单号关联规则。</td></tr><tr><td>字段补齐</td><td class='issue'>检漏明细的完成判定口径需明确</td><td>命令已恢复可调用，create_time / arrive_time / finish_time / step_status_name 均已返回，JL-019/021/022 已能对账；但 finish_time（销单）与 step_status_name（已处理完成）不是同一时点，完成率会有差异。</td><td>完成数/完成率能否达标取决于用哪个字段判定「完成」。</td><td>在接口文档里写明 finish_time 的写入时机；若业务以「已处理完成」为准，需要同步修改标准 SQL 口径。</td></tr><tr><td>字段补齐</td><td class='issue'>爆管聚合命令没有三级部门维度（已用明细命令绕开）</td><td>4 个 *_pipe_diameter_burst 只返回 dimensionValue=单位，无 l3_name；改用 water_supply_pipe_maintenance_work 明细（含 caliber + level3_name）后，BJ-017 的 27 组「管径×单位×三级部门」已完全对上。</td><td>聚合命令仍不能下钻三级部门，但明细命令可以替代，不影响验收。</td><td>如需继续用聚合命令，请补 dimensionType=2（三级部门）；否则在映射表里标注 BJ-017 走明细命令。</td></tr><tr><td>字段补齐</td><td class='issue'>没有 DMA 物理漏损 / DMA 小区数的对应命令</td><td>标准 DMA-026 的漏损量来自 dwd_lsxt_wlls.physicalloss（diffresult=GOOD），小区数来自该表去重 dmaid。CLI 的 month_loss_water 是总漏损量（福田 1,390,993 vs 标准 484,990），month_physical_leakage_amount 是日粒度 2,134 行。</td><td>DMA-026 只能核对累计产销差率一列。</td><td>新增按组织聚合的 DMA 物理漏损命令（SUM(physicalloss)、COUNT(DISTINCT dmaid)），或暴露可与 wlls 对齐的字段。</td></tr><tr><td>数据质量</td><td class='issue'>预警明细与 dwd_lsxt_bj 行集不一致</td><td>7 月 NightFlow：CLI 558 条 / 库 549 条，CLI TOP10 少 1 条计数、缺 2 个 DMA；7 月全部预警：CLI 11,308 条 / 库 11,558 条，差 250。</td><td>BJ-003、BJ-016 的数值不可直接采信。</td><td>核对 leakage_warning_information 的底层表、日期边界和去重规则，与 dwd_lsxt_bj 对齐。</td></tr><tr><td>数据质量</td><td class='issue'>检漏工单明细与 dwd_gdgl_gd_jlmx 行集不一致</td><td>7 月：CLI 266 条（福田 97 / 南山 77 / 罗湖 73 / 盐田 19），库表 470 条（含宝安 267、龙岗 166、光明 19，且南山仅 1 条）；组织和行数都对不上。不带日期时 CLI 返回 16,822 条，说明日期过滤本身有效。</td><td>JL-019、JL-021、JL-022、JL-036 的工单数和完成率无法与标准值对齐，差异不是脚本问题。</td><td>核对 leak_detection_and_verification_work 的底层表与 dwd_gdgl_gd_jlmx 是否为同一业务口径（是否含历史归档、是否按 bz_bm 归口）。</td></tr><tr><td>数据质量</td><td class='issue'>handled 字段语义与库表不一致</td><td>CLI handled：None 8,662 / True 2,645 / False 1；库表 NOT handled = 1；handldate / handlperson 在 8,664 条上同时为空。</td><td>BJ-016 的「未处理数 / 超 10 天未处理数」完全不可用（CLI 8,663 vs 标准 1）。</td><td>返回与 dwd_lsxt_bj.handled 同源的字段，或提供按月汇总的预警统计命令；不要把处置记录表的 null 当成未处理。</td></tr><tr><td>数据质量</td><td class='issue'>源表缺月 / 最新月未完整</td><td>year_cum_diff_rate 全单位返回 314 行（应 315），宝安水务集团缺 202602；202608 的 month_product 供水量为 0、售水量 155。</td><td>CX-036 缺 1 个单元格；任何以 202608 为最新月的看板都会展示异常值。</td><td>确认宝安 202602 是否源表缺月；T-2 月未完成装载时，接口应返回明确状态而不是 0。</td></tr></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>三、逐题详情</h2>
+    <div id="CX-033">
+<details class="case">
+  <summary>
+    <span class="case-id">CX-033</span>
+    <span class="badge pass">通过</span>
+    <span class="case-q">2026年1月至6月，福田分公司每个月累计产销差率较上月的环比变化是多少？</span>
+    <span class="case-summary">福田 1–6 月累计率</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>CX</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>月份(期数)</th><th>累计产销差率</th><th>累计产销差率环比变化</th></tr></thead><tbody><tr><td>202601</td><td>0.0224</td><td>—</td></tr><tr><td>202602</td><td>-0.0918</td><td>-0.1142</td></tr><tr><td>202603</td><td>0.0515</td><td>0.1433</td></tr><tr><td>202604</td><td>0.0509</td><td>-0.0006</td></tr><tr><td>202605</td><td>0.0636</td><td>0.0127</td></tr><tr><td>202606</td><td>0.0665</td><td>0.0029</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>月份(期数)</th><th>累计产销差率</th><th>累计产销差率环比变化</th></tr></thead><tbody><tr><td>202601</td><td>0.0224</td><td>—</td></tr><tr><td>202602</td><td>-0.0918</td><td>-0.1142</td></tr><tr><td>202603</td><td>0.0515</td><td>0.1433</td></tr><tr><td>202604</td><td>0.0509</td><td>-0.0005</td></tr><tr><td>202605</td><td>0.0636</td><td>0.0126</td></tr><tr><td>202606</td><td>0.0665</td><td>0.0029</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <p class="ok">无差异</p>
+
+    <h4>根因</h4>
+    <p class="root"></p>
+
+    <h4>优化建议</h4>
+    <p class="recommend"></p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>6 期累计率与环比全部命中标准值。</li><li>率尺度为 0–1，与标准值一致。</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke year_cum_diff_rate --json
+  --param periodType=2
+  --param dimensionType=1
+  --param dimensionValue=福田分公司</code></pre><p class="cmd-note">本次返回 21 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT CAST(_g.&quot;月份(期数)&quot; AS int) AS &quot;月份(期数)&quot;, ROUND((_g.rate)::numeric, 4) AS &quot;累计产销差率&quot;, ROUND((_g.mom_change)::numeric, 4) AS &quot;累计产销差率环比变化&quot;
+FROM (
+SELECT ym AS &quot;月份(期数)&quot;, rate, rate - prev_rate AS mom_change
+FROM (
+  SELECT ym, rate, LAG(rate) OVER (ORDER BY ym) AS prev_rate
+  FROM (
+    SELECT f.businessyearmonth AS ym, (SUM(f.totalproduct)-SUM(f.totalconsume))/NULLIF(SUM(f.totalproduct),0) AS rate
+    FROM dwd_lsxt_fqcxfx f
+    WHERE f.periodtype=&#x27;SzwgBusinessYear&#x27; AND f.businessyearmonth IN (202601,202602,202603,202604,202605,202606) AND f.zoneid=&#x27;F1004&#x27;
+    GROUP BY f.businessyearmonth
+  ) a
+) s
+ORDER BY 1 ASC
+) _g
+ORDER BY 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="CX-032">
+<details class="case">
+  <summary>
+    <span class="case-id">CX-032</span>
+    <span class="badge warn">口径不符</span>
+    <span class="case-q">2026年1月至5月，盐田分公司每个月的供水量、售水量和产销差水量分别是多少？</span>
+    <span class="case-summary">盐田 1–5 月供/售/差</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>CX</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>月份(期数)</th><th>供水量</th><th>售水量</th><th>产销差量</th></tr></thead><tbody><tr><td>202601</td><td>2,515,137</td><td>2,298,681</td><td>216,456</td></tr><tr><td>202602</td><td>1,880,361</td><td>2,259,182</td><td>-378,821</td></tr><tr><td>202603</td><td>2,359,162</td><td>1,715,988</td><td>643,174</td></tr><tr><td>202604</td><td>2,338,929</td><td>2,181,838</td><td>157,091</td></tr><tr><td>202605</td><td>2,498,583</td><td>2,144,302</td><td>354,281</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>月份(期数)</th><th>供水量</th><th>售水量</th><th>产销差量</th></tr></thead><tbody><tr><td>202601</td><td>2,515,137</td><td>2,298,681</td><td>216,456</td></tr><tr><td>202602</td><td>1,880,361</td><td>2,259,182</td><td>-378,821</td></tr><tr><td>202603</td><td>2,359,162</td><td>1,715,988</td><td>643,174</td></tr><tr><td>202604</td><td>2,338,929</td><td>2,181,993</td><td>156,936</td></tr><tr><td>202605</td><td>2,429,789</td><td>2,144,302</td><td>285,487</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <div class="table-wrap"><table><thead><tr><th>类型</th><th>键</th><th>字段</th><th>标准值</th><th>CLI 值</th><th>差值</th><th>说明</th></tr></thead><tbody><tr><td>VALUE_DIFF</td><td>202605</td><td>供水量</td><td class="diff-expected">2,429,789</td><td class="diff-actual">2,498,583</td><td class="diff-delta">68,794</td><td>「202605」供水量: 标准 2429789.0 / CLI 2498583.0</td></tr><tr><td>VALUE_DIFF</td><td>202605</td><td>产销差量</td><td class="diff-expected">285,487</td><td class="diff-actual">354,281</td><td class="diff-delta">68,794</td><td>「202605」产销差量: 标准 285487.0 / CLI 354281.0</td></tr></tbody></table></div>
+
+    <h4>根因</h4>
+    <p class="root">CLI 的 month_product / month_consume 用 SzwgBusinessYear 年累计相减得到当月值；标准值用 dwd_lsxt_fqcxfx 的 SzwgBusiness 单月快照。前 3 个月两套值恰好相等，202604 起累计口径被修订，差异暴露。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">统一「当月水量」口径：要么 CLI 直接暴露 SzwgBusiness 单月值（BothUcisMonth），要么标准集改用 SzwgBusinessYear 累计差并重新业务确认。已确认 CLI 的 periodType 只支持 1=日 / 2=月 / 3=年，BothUcisMonth 尚未开放，在口径定稿前不要把 month_* 当成唯一当月来源。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>202604 售水量：CLI 2181838 / 标准 2181993</li><li>202605 供水量：CLI 2498583 / 标准 2429789</li><li>验证：year_cum_product(202605)-year_cum_product(202604)=2498583，与 CLI 完全一致</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke month_product --json
+  --param periodType=2
+  --param dimensionType=1
+  --param dimensionValue=盐田分公司</code></pre><p class="cmd-note">本次返回 21 行</p><pre class="cmd"><code>python -m leakage_agent_cli invoke month_consume --json
+  --param periodType=2
+  --param dimensionType=1
+  --param dimensionValue=盐田分公司</code></pre><p class="cmd-note">本次返回 21 行</p><pre class="cmd"><code>python -m leakage_agent_cli invoke month_diff_water --json
+  --param periodType=2
+  --param dimensionType=1
+  --param dimensionValue=盐田分公司</code></pre><p class="cmd-note">本次返回 21 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT CAST(_g.&quot;月份(期数)&quot; AS int) AS &quot;月份(期数)&quot;, ROUND((_g.supply)::numeric, 4) AS &quot;供水量&quot;, ROUND((_g.sales)::numeric, 4) AS &quot;售水量&quot;, ROUND((_g.diff_vol)::numeric, 4) AS &quot;产销差量&quot;
+FROM (
+SELECT f.businessyearmonth AS &quot;月份(期数)&quot;, SUM(f.totalproduct) AS supply,
+       SUM(f.totalconsume) AS sales, SUM(f.totalproduct)-SUM(f.totalconsume) AS diff_vol
+FROM dwd_lsxt_fqcxfx f
+WHERE f.periodtype=&#x27;SzwgBusiness&#x27; AND f.businessyearmonth IN (202601,202602,202603,202604,202605) AND f.zoneid=&#x27;F1001&#x27;
+GROUP BY 1
+ORDER BY 1 ASC
+) _g
+ORDER BY 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="CX-036">
+<details class="case">
+  <summary>
+    <span class="case-id">CX-036</span>
+    <span class="badge partial">部分可测</span>
+    <span class="case-q">2026年1月至5月，全集团各单位的年累计产销差率月度趋势是怎样的？</span>
+    <span class="case-summary">15 个单位 × 5 个月</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>CX</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>1月</th><th>2月</th><th>3月</th><th>4月</th><th>5月</th></tr></thead><tbody><tr><td>龙岗水务集团</td><td>0.0899</td><td>-0.0675</td><td>0.09</td><td>0.0886</td><td>0.0981</td></tr><tr><td>光明水务集团</td><td>0.0177</td><td>-0.1463</td><td>0.0234</td><td>0.0242</td><td>0.0317</td></tr><tr><td>宝安水务集团</td><td>0.039</td><td>—</td><td>0.0532</td><td>0.0478</td><td>0.0581</td></tr><tr><td>大鹏新区水务</td><td>0.0902</td><td>-0.0016</td><td>0.1118</td><td>0.0948</td><td>0.1203</td></tr><tr><td>深汕水务</td><td>0.1007</td><td>0.1258</td><td>0.1234</td><td>0.1176</td><td>0.113</td></tr><tr><td>布吉水司</td><td>-0.1301</td><td>-0.2032</td><td>0.0316</td><td>0.039</td><td>0.0544</td></tr><tr><td>福田分公司</td><td>0.0224</td><td>-0.0918</td><td>0.0515</td><td>0.0509</td><td>0.0636</td></tr><tr><td>罗湖分公司</td><td>0.0898</td><td>-0.0181</td><td>0.1141</td><td>0.1151</td><td>0.1277</td></tr><tr><td>集团</td><td>0.0466</td><td>-0.1017</td><td>0.0663</td><td>0.0649</td><td>0.076</td></tr><tr><td>集团本部</td><td>0.0784</td><td>-0.044</td><td>0.0916</td><td>0.0894</td><td>0.0995</td></tr><tr><td>盐田分公司</td><td>0.0861</td><td>-0.0369</td><td>0.0712</td><td>0.0701</td><td>0.0856</td></tr><tr><td>龙华水务集团</td><td>0.0353</td><td>-0.1535</td><td>0.0332</td><td>0.0368</td><td>0.0529</td></tr><tr><td>南山分公司</td><td>0.1199</td><td>-0.0135</td><td>0.1202</td><td>0.1154</td><td>0.122</td></tr><tr><td>坪地供水</td><td>0.016</td><td>-0.1101</td><td>0.0421</td><td>0.0535</td><td>0.0736</td></tr><tr><td>莲塘供水</td><td>0.1107</td><td>0.0614</td><td>0.1608</td><td>0.1401</td><td>0.1434</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>1月</th><th>2月</th><th>3月</th><th>4月</th><th>5月</th></tr></thead><tbody><tr><td>光明水务集团</td><td>0.0177</td><td>-0.1463</td><td>0.0234</td><td>0.0242</td><td>0.0317</td></tr><tr><td>南山分公司</td><td>0.1199</td><td>-0.0135</td><td>0.1202</td><td>0.1154</td><td>0.122</td></tr><tr><td>坪地供水</td><td>0.016</td><td>-0.1101</td><td>0.0421</td><td>0.0535</td><td>0.0736</td></tr><tr><td>大鹏新区分公司</td><td>0.0902</td><td>-0.0016</td><td>0.1118</td><td>0.0948</td><td>0.1203</td></tr><tr><td>宝安水务集团</td><td>0.039</td><td>-0.1498</td><td>0.0532</td><td>0.0478</td><td>0.0581</td></tr><tr><td>布吉水司</td><td>-0.1301</td><td>-0.2032</td><td>0.0316</td><td>0.039</td><td>0.0544</td></tr><tr><td>深圳环境水务集团</td><td>0.0466</td><td>-0.1017</td><td>0.0663</td><td>0.0649</td><td>0.076</td></tr><tr><td>深汕水务</td><td>0.1007</td><td>0.1258</td><td>0.1234</td><td>0.1176</td><td>0.113</td></tr><tr><td>盐田分公司</td><td>0.0861</td><td>-0.0369</td><td>0.0712</td><td>0.0701</td><td>0.0856</td></tr><tr><td>福田分公司</td><td>0.0224</td><td>-0.0918</td><td>0.0515</td><td>0.0509</td><td>0.0636</td></tr><tr><td>罗湖分公司</td><td>0.0898</td><td>-0.0181</td><td>0.1141</td><td>0.1151</td><td>0.1277</td></tr><tr><td>莲塘供水</td><td>0.1107</td><td>0.0614</td><td>0.1608</td><td>0.1401</td><td>0.1434</td></tr><tr><td>集团合计</td><td>0.0596</td><td>-0.0942</td><td>0.0689</td><td>0.0669</td><td>0.0776</td></tr><tr><td>集团本部</td><td>0.0784</td><td>-0.044</td><td>0.0916</td><td>0.0894</td><td>0.0995</td></tr><tr><td>龙华水务集团</td><td>0.0353</td><td>-0.1535</td><td>0.0332</td><td>0.0368</td><td>0.0529</td></tr><tr><td>龙岗水务集团</td><td>0.0899</td><td>-0.0675</td><td>0.09</td><td>0.0886</td><td>0.0981</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <div class="table-wrap"><table><thead><tr><th>类型</th><th>键</th><th>字段</th><th>标准值</th><th>CLI 值</th><th>差值</th><th>说明</th></tr></thead><tbody><tr><td>MISSING_FIELD</td><td>宝安水务集团</td><td>2月</td><td class="diff-expected">-0.1498</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>「宝安水务集团」缺少字段「2月」</td></tr><tr><td>MISSING_ROW</td><td>集团合计</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「集团合计」</td></tr></tbody></table></div>
+
+    <h4>根因</h4>
+    <p class="root">CLI 返回 15 个单位；标准值有 16 行。缺少组织：集团合计。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">补齐组织别名（尤其大鹏环水公司→大鹏新区分公司、环水集团→深圳环境水务集团），并确认「集团合计」行是否应由集团级聚合命令单独返回；宝安水务集团 202602 缺失需要大数据确认是否源表缺月。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>CLI 实际单位：光明水务集团、南山分公司、坪地供水、大鹏新区水务、宝安水务集团、布吉水司、深汕水务、盐田分公司、福田分公司、罗湖分公司、莲塘供水、集团、集团本部、龙华水务集团、龙岗水务集团</li><li>缺失行 1，数值差异 0</li><li>率尺度 0–1，与标准值一致</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke year_cum_diff_rate --json
+  --param dimensionType=1</code></pre><p class="cmd-note">本次返回 314 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;组织&quot; AS &quot;组织&quot;, ROUND((_g.jan)::numeric, 4) AS &quot;1月&quot;, ROUND((_g.feb)::numeric, 4) AS &quot;2月&quot;, ROUND((_g.mar)::numeric, 4) AS &quot;3月&quot;, ROUND((_g.apr)::numeric, 4) AS &quot;4月&quot;, ROUND((_g.may)::numeric, 4) AS &quot;5月&quot;
+FROM (
+SELECT &quot;组织&quot;, jan, feb, mar, apr, may FROM (
+  SELECT 
+CASE t.zoneid WHEN &#x27;F1&#x27; THEN &#x27;深圳环境水务集团&#x27;
+     WHEN &#x27;F100&#x27; THEN &#x27;集团本部&#x27;
+     WHEN &#x27;F1001&#x27; THEN &#x27;盐田分公司&#x27;
+     WHEN &#x27;F1002&#x27; THEN &#x27;罗湖分公司&#x27; WHEN &#x27;F1004&#x27; THEN &#x27;福田分公司&#x27; WHEN &#x27;F1003&#x27; THEN &#x27;南山分公司&#x27;
+     WHEN &#x27;F1007&#x27; THEN &#x27;宝安水务集团&#x27; WHEN &#x27;F1501&#x27; THEN &#x27;龙岗水务集团&#x27;
+     WHEN &#x27;F1500&#x27; THEN &#x27;龙华水务集团&#x27; WHEN &#x27;F1005&#x27; THEN &#x27;光明水务集团&#x27;
+     WHEN &#x27;F1012&#x27; THEN &#x27;大鹏新区分公司&#x27; WHEN &#x27;F1014&#x27; THEN &#x27;布吉水司&#x27;
+     WHEN &#x27;F1013&#x27; THEN &#x27;莲塘供水&#x27; WHEN &#x27;F1009&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;F1011&#x27; THEN &#x27;深汕水务&#x27;
+     ELSE t.zoneid END AS &quot;组织&quot;, MAX(CASE WHEN t.businessyearmonth=CAST(202601 AS int) THEN t.rate END) AS jan,
+       MAX(CASE WHEN t.businessyearmonth=CAST(202602 AS int) THEN t.rate END) AS feb,
+       MAX(CASE WHEN t.businessyearmonth=CAST(202603 AS int) THEN t.rate END) AS mar,
+       MAX(CASE WHEN t.businessyearmonth=CAST(202604 AS int) THEN t.rate END) AS apr,
+       MAX(CASE WHEN t.businessyearmonth=CAST(202605 AS int) THEN t.rate END) AS may
+  FROM (
+    SELECT f.zoneid, f.businessyearmonth, (SUM(f.totalproduct)-SUM(f.totalconsume))/NULLIF(SUM(f.totalproduct),0) AS rate
+    FROM dwd_lsxt_fqcxfx f
+    WHERE f.periodtype=&#x27;SzwgBusinessYear&#x27; AND f.businessyearmonth IN (202601,202602,202603,202604,202605)
+    GROUP BY f.zoneid, f.businessyearmonth
+  ) t
+  GROUP BY t.zoneid
+) x
+UNION ALL
+SELECT &#x27;集团合计&#x27; AS &quot;组织&quot;, jan, feb, mar, apr, may FROM (
+  SELECT MAX(CASE WHEN g.businessyearmonth=CAST(202601 AS int) THEN g.rate END) AS jan,
+       MAX(CASE WHEN g.businessyearmonth=CAST(202602 AS int) THEN g.rate END) AS feb,
+       MAX(CASE WHEN g.businessyearmonth=CAST(202603 AS int) THEN g.rate END) AS mar,
+       MAX(CASE WHEN g.businessyearmonth=CAST(202604 AS int) THEN g.rate END) AS apr,
+       MAX(CASE WHEN g.businessyearmonth=CAST(202605 AS int) THEN g.rate END) AS may
+  FROM (
+    SELECT f.businessyearmonth, (SUM(f.totalproduct)-SUM(f.totalconsume))/NULLIF(SUM(f.totalproduct),0) AS rate
+    FROM dwd_lsxt_fqcxfx f
+    WHERE f.periodtype=&#x27;SzwgBusinessYear&#x27; AND f.businessyearmonth IN (202601,202602,202603,202604,202605)
+      AND f.zoneid IN (&#x27;F1001&#x27;,&#x27;F1002&#x27;,&#x27;F1004&#x27;,&#x27;F1003&#x27;,&#x27;F1007&#x27;,&#x27;F1501&#x27;,&#x27;F1005&#x27;,&#x27;F1500&#x27;,&#x27;F1013&#x27;,&#x27;F1009&#x27;,&#x27;F1012&#x27;,&#x27;F1011&#x27;)
+    GROUP BY f.businessyearmonth
+  ) g
+) y
+ORDER BY 1 ASC
+) _g
+ORDER BY 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="CX-037">
+<details class="case">
+  <summary>
+    <span class="case-id">CX-037</span>
+    <span class="badge pass">通过</span>
+    <span class="case-q">2026上半年各单位的年累计产销差率较2025上半年同比变化是多少？</span>
+    <span class="case-summary">15 个单位同比</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>CX</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>2026上半年产销差率</th><th>2025上半年产销差率</th><th>同比变化</th></tr></thead><tbody><tr><td>龙岗水务集团</td><td>0.0959</td><td>0.1082</td><td>-0.0123</td></tr><tr><td>光明水务集团</td><td>0.0272</td><td>0.0578</td><td>-0.0306</td></tr><tr><td>宝安水务集团</td><td>0.0545</td><td>0.0718</td><td>-0.0173</td></tr><tr><td>大鹏新区水务</td><td>0.1216</td><td>0.0766</td><td>0.045</td></tr><tr><td>深汕水务</td><td>0.1011</td><td>0.107</td><td>-0.0059</td></tr><tr><td>布吉水司</td><td>0.0623</td><td>0.117</td><td>-0.0547</td></tr><tr><td>福田分公司</td><td>0.0665</td><td>0.0978</td><td>-0.0313</td></tr><tr><td>罗湖分公司</td><td>0.1208</td><td>0.1343</td><td>-0.0135</td></tr><tr><td>集团</td><td>0.0754</td><td>0.0837</td><td>-0.0083</td></tr><tr><td>集团本部</td><td>0.0991</td><td>0.0987</td><td>0.0004</td></tr><tr><td>盐田分公司</td><td>0.0936</td><td>0.0773</td><td>0.0163</td></tr><tr><td>龙华水务集团</td><td>0.0572</td><td>0.0308</td><td>0.0264</td></tr><tr><td>南山分公司</td><td>0.1203</td><td>0.114</td><td>0.0063</td></tr><tr><td>坪地供水</td><td>0.0742</td><td>0.091</td><td>-0.0168</td></tr><tr><td>莲塘供水</td><td>0.1404</td><td>0.179</td><td>-0.0386</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>2026上半年产销差率</th><th>2025上半年产销差率</th><th>同比变化</th></tr></thead><tbody><tr><td>布吉水司</td><td>0.0623</td><td>0.117</td><td>-0.0548</td></tr><tr><td>莲塘供水</td><td>0.1404</td><td>0.179</td><td>-0.0386</td></tr><tr><td>福田分公司</td><td>0.0665</td><td>0.0978</td><td>-0.0313</td></tr><tr><td>光明水务集团</td><td>0.0272</td><td>0.0578</td><td>-0.0306</td></tr><tr><td>宝安水务集团</td><td>0.0545</td><td>0.0718</td><td>-0.0173</td></tr><tr><td>坪地供水</td><td>0.0742</td><td>0.091</td><td>-0.0168</td></tr><tr><td>罗湖分公司</td><td>0.1208</td><td>0.1343</td><td>-0.0135</td></tr><tr><td>龙岗水务集团</td><td>0.0959</td><td>0.1082</td><td>-0.0122</td></tr><tr><td>深圳环境水务集团</td><td>0.0754</td><td>0.0837</td><td>-0.0084</td></tr><tr><td>深汕水务</td><td>0.1011</td><td>0.107</td><td>-0.006</td></tr><tr><td>集团本部</td><td>0.0991</td><td>0.0987</td><td>0.0004</td></tr><tr><td>南山分公司</td><td>0.1203</td><td>0.114</td><td>0.0063</td></tr><tr><td>盐田分公司</td><td>0.0936</td><td>0.0773</td><td>0.0163</td></tr><tr><td>龙华水务集团</td><td>0.0572</td><td>0.0308</td><td>0.0264</td></tr><tr><td>大鹏新区分公司</td><td>0.1216</td><td>0.0766</td><td>0.0449</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <p class="ok">无差异</p>
+
+    <h4>根因</h4>
+    <p class="root"></p>
+
+    <h4>优化建议</h4>
+    <p class="recommend"></p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>使用 year_cum_diff_rate 的 202606 与 202506 两期值相减</li><li>CLI 实际单位数 15，标准值 15 行</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke year_cum_diff_rate --json
+  --param dimensionType=1</code></pre><p class="cmd-note">本次返回 314 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;组织&quot; AS &quot;组织&quot;, ROUND((_g.rate_2026)::numeric, 4) AS &quot;2026上半年产销差率&quot;, ROUND((_g.rate_2025)::numeric, 4) AS &quot;2025上半年产销差率&quot;, ROUND((_g.yoy_change)::numeric, 4) AS &quot;同比变化&quot;
+FROM (
+SELECT 
+CASE f.zoneid WHEN &#x27;F1&#x27; THEN &#x27;深圳环境水务集团&#x27;
+     WHEN &#x27;F100&#x27; THEN &#x27;集团本部&#x27;
+     WHEN &#x27;F1001&#x27; THEN &#x27;盐田分公司&#x27;
+     WHEN &#x27;F1002&#x27; THEN &#x27;罗湖分公司&#x27; WHEN &#x27;F1004&#x27; THEN &#x27;福田分公司&#x27; WHEN &#x27;F1003&#x27; THEN &#x27;南山分公司&#x27;
+     WHEN &#x27;F1007&#x27; THEN &#x27;宝安水务集团&#x27; WHEN &#x27;F1501&#x27; THEN &#x27;龙岗水务集团&#x27;
+     WHEN &#x27;F1500&#x27; THEN &#x27;龙华水务集团&#x27; WHEN &#x27;F1005&#x27; THEN &#x27;光明水务集团&#x27;
+     WHEN &#x27;F1012&#x27; THEN &#x27;大鹏新区分公司&#x27; WHEN &#x27;F1014&#x27; THEN &#x27;布吉水司&#x27;
+     WHEN &#x27;F1013&#x27; THEN &#x27;莲塘供水&#x27; WHEN &#x27;F1009&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;F1011&#x27; THEN &#x27;深汕水务&#x27;
+     ELSE f.zoneid END AS &quot;组织&quot;, c.rate AS rate_2026, y.rate AS rate_2025, c.rate - y.rate AS yoy_change
+FROM (
+  SELECT f.zoneid, (SUM(f.totalproduct)-SUM(f.totalconsume))/NULLIF(SUM(f.totalproduct),0) AS rate FROM dwd_lsxt_fqcxfx f
+  WHERE f.periodtype=&#x27;SzwgBusinessYear&#x27; AND f.businessyearmonth=CAST(202606 AS int)
+  GROUP BY f.zoneid
+) c
+JOIN (
+  SELECT f.zoneid, (SUM(f.totalproduct)-SUM(f.totalconsume))/NULLIF(SUM(f.totalproduct),0) AS rate FROM dwd_lsxt_fqcxfx f
+  WHERE f.periodtype=&#x27;SzwgBusinessYear&#x27; AND f.businessyearmonth=CAST(202606 AS int)-100
+  GROUP BY f.zoneid
+) y ON c.zoneid=y.zoneid
+JOIN dwd_lsxt_fqcxfx f ON f.zoneid=c.zoneid
+ AND f.periodtype=&#x27;SzwgBusinessYear&#x27; AND f.businessyearmonth=CAST(202606 AS int)
+GROUP BY c.zoneid, c.rate, y.rate, f.zoneid
+ORDER BY yoy_change ASC NULLS LAST, 1 ASC
+) _g
+ORDER BY &quot;同比变化&quot; ASC NULLS LAST, 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="JL-018">
+<details class="case">
+  <summary>
+    <span class="case-id">JL-018</span>
+    <span class="badge partial">部分可测</span>
+    <span class="case-q">列出上月各单位消防栓维修工单数量、排放水量和漏失水量合计。</span>
+    <span class="case-summary">1007 条维修工单</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>JL</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>维修单数</th><th>排放水量</th><th>漏失水量</th></tr></thead><tbody><tr><td>光明水务集团</td><td>201</td><td>—</td><td>—</td></tr><tr><td>南山分公司</td><td>42</td><td>—</td><td>—</td></tr><tr><td>坪地供水</td><td>18</td><td>—</td><td>—</td></tr><tr><td>大鹏新区水务</td><td>8</td><td>—</td><td>—</td></tr><tr><td>宝安水务集团</td><td>95</td><td>—</td><td>—</td></tr><tr><td>深汕水务</td><td>3</td><td>—</td><td>—</td></tr><tr><td>盐田分公司</td><td>13</td><td>—</td><td>—</td></tr><tr><td>福田分公司</td><td>275</td><td>—</td><td>—</td></tr><tr><td>罗湖分公司</td><td>15</td><td>—</td><td>—</td></tr><tr><td>莲塘供水</td><td>2</td><td>—</td><td>—</td></tr><tr><td>龙华水务集团</td><td>217</td><td>—</td><td>—</td></tr><tr><td>龙岗水务集团</td><td>118</td><td>—</td><td>—</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>维修单数</th><th>排放水量</th><th>漏失水量</th></tr></thead><tbody><tr><td>光明水务集团</td><td>201</td><td>94.41</td><td>112.21</td></tr><tr><td>南山分公司</td><td>42</td><td>14.3</td><td>72.3</td></tr><tr><td>坪地供水</td><td>18</td><td>17</td><td>16.2</td></tr><tr><td>大鹏新区分公司</td><td>8</td><td>5</td><td>7.7</td></tr><tr><td>宝安水务集团</td><td>95</td><td>38.38</td><td>348.512</td></tr><tr><td>深汕水务</td><td>3</td><td>2</td><td>8</td></tr><tr><td>盐田分公司</td><td>13</td><td>9</td><td>209</td></tr><tr><td>福田分公司</td><td>275</td><td>68.21</td><td>93.11</td></tr><tr><td>罗湖分公司</td><td>15</td><td>3</td><td>2.7</td></tr><tr><td>莲塘供水</td><td>2</td><td>0</td><td>0.01</td></tr><tr><td>龙华水务集团</td><td>217</td><td>24.8</td><td>48.8</td></tr><tr><td>龙岗水务集团</td><td>118</td><td>51.254</td><td>45.814</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <div class="table-wrap"><table><thead><tr><th>类型</th><th>键</th><th>字段</th><th>标准值</th><th>CLI 值</th><th>差值</th><th>说明</th></tr></thead><tbody><tr><td>MISSING_FIELD</td><td>全部组织</td><td>排放水量</td><td class="diff-expected">有值</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>fire_hydrant_maintenance_work 返回字段中无 discharge_water</td></tr><tr><td>MISSING_FIELD</td><td>全部组织</td><td>漏失水量</td><td class="diff-expected">有值</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>fire_hydrant_maintenance_work 返回字段中无 water_leakage</td></tr></tbody></table></div>
+
+    <h4>根因</h4>
+    <p class="root">维修单数可核对：CLI 7 月共 1007 条，按组织分组与标准值一致（或接近）。排放水量/漏失水量不可核对：fire_hydrant_maintenance_work 的返回字段没有 discharge_water / water_leakage；fire_hydrant_flushing_report 是消防栓排放上报（7 月仅 6 条），不是这 1007 条维修工单，口径不同。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">在消防栓维修明细中补 discharge_water、water_leakage 两个字段；如果业务上排放量来自另一张上报表，需要提供工单号关联规则，不能直接相加。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>fire_hydrant_maintenance_work 7 月 1007 条，标准值 12 行合计 1007 条</li><li>返回字段清单无 discharge_water / water_leakage</li><li>fire_hydrant_flushing_report 7 月 6 条，字段有 discharge_water，但属于另一业务表</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke fire_hydrant_maintenance_work --json
+  --param create_time_start=2026-07-01</code></pre><p class="cmd-note">本次返回 1007 行</p><pre class="cmd"><code>python -m leakage_agent_cli invoke fire_hydrant_flushing_report --json
+  --param time_start=2026-07-01</code></pre><p class="cmd-note">本次返回 6 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;组织&quot; AS &quot;组织&quot;, CAST(_g.cnt AS bigint) AS &quot;维修单数&quot;, ROUND((_g.discharge)::numeric, 4) AS &quot;排放水量&quot;, ROUND((_g.loss_vol)::numeric, 4) AS &quot;漏失水量&quot;
+FROM (
+SELECT CASE bz_bm WHEN &#x27;坪地分公司&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;莲塘分公司&#x27; THEN &#x27;莲塘供水&#x27;
+     ELSE bz_bm END AS &quot;组织&quot;, COUNT(*) AS cnt,
+       SUM(NULLIF(discharge_water,&#x27;&#x27;)::numeric) AS discharge,
+       SUM(NULLIF(water_leakage,&#x27;&#x27;)::numeric) AS loss_vol
+FROM dwd_gdgl_gd_xfswxmx
+WHERE create_time&gt;=CAST(&#x27;2026-07-01&#x27; AS timestamp) AND create_time&lt;CAST(&#x27;2026-08-01&#x27; AS timestamp)
+GROUP BY 1
+ORDER BY 1 ASC
+) _g
+ORDER BY 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="JL-036">
+<details class="case">
+  <summary>
+    <span class="case-id">JL-036</span>
+    <span class="badge partial">部分可测</span>
+    <span class="case-q">列出各单位2026年6月单月产销差率和2026年7月检漏工单数量。</span>
+    <span class="case-summary">单月率 15 个单位；检漏数缺</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>JL</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>单月产销差率</th><th>检漏工单数</th></tr></thead><tbody><tr><td>布吉水司</td><td>0.0983</td><td>0</td></tr><tr><td>罗湖分公司</td><td>0.0874</td><td>73</td></tr><tr><td>莲塘供水</td><td>0.1257</td><td>0</td></tr><tr><td>大鹏新区水务</td><td>0.1273</td><td>0</td></tr><tr><td>南山分公司</td><td>0.1126</td><td>77</td></tr><tr><td>盐田分公司</td><td>0.1292</td><td>19</td></tr><tr><td>集团本部</td><td>0.0977</td><td>0</td></tr><tr><td>龙岗水务集团</td><td>0.0856</td><td>0</td></tr><tr><td>龙华水务集团</td><td>0.0772</td><td>0</td></tr><tr><td>坪地供水</td><td>0.0772</td><td>0</td></tr><tr><td>福田分公司</td><td>0.0799</td><td>97</td></tr><tr><td>光明水务集团</td><td>0.0062</td><td>0</td></tr><tr><td>宝安水务集团</td><td>0.0382</td><td>0</td></tr><tr><td>深汕水务</td><td>0.0492</td><td>0</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>单月产销差率</th><th>检漏工单数</th></tr></thead><tbody><tr><td>布吉水司</td><td>1</td><td>0</td></tr><tr><td>罗湖分公司</td><td>0.1588</td><td>0</td></tr><tr><td>莲塘供水</td><td>0.1459</td><td>0</td></tr><tr><td>大鹏新区分公司</td><td>0.1273</td><td>0</td></tr><tr><td>南山分公司</td><td>0.112</td><td>1</td></tr><tr><td>盐田分公司</td><td>0.1035</td><td>2</td></tr><tr><td>集团本部</td><td>0.0947</td><td>0</td></tr><tr><td>龙岗水务集团</td><td>0.0795</td><td>166</td></tr><tr><td>龙华水务集团</td><td>0.0783</td><td>0</td></tr><tr><td>坪地供水</td><td>0.0625</td><td>0</td></tr><tr><td>福田分公司</td><td>0.0459</td><td>15</td></tr><tr><td>光明水务集团</td><td>0.0061</td><td>19</td></tr><tr><td>宝安水务集团</td><td>-0.0199</td><td>267</td></tr><tr><td>深汕水务</td><td>—</td><td>0</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <div class="table-wrap"><table><thead><tr><th>类型</th><th>键</th><th>字段</th><th>标准值</th><th>CLI 值</th><th>差值</th><th>说明</th></tr></thead><tbody><tr><td>VALUE_DIFF</td><td>布吉水司</td><td>单月产销差率</td><td class="diff-expected">1</td><td class="diff-actual">0.0983</td><td class="diff-delta">-0.9017</td><td>「布吉水司」单月产销差率: 标准 1.0 / CLI 0.0983</td></tr><tr><td>VALUE_DIFF</td><td>罗湖分公司</td><td>单月产销差率</td><td class="diff-expected">0.1588</td><td class="diff-actual">0.0874</td><td class="diff-delta">-0.0714</td><td>「罗湖分公司」单月产销差率: 标准 0.1588 / CLI 0.0874</td></tr><tr><td>VALUE_DIFF</td><td>罗湖分公司</td><td>检漏工单数</td><td class="diff-expected">0</td><td class="diff-actual">73</td><td class="diff-delta">73</td><td>「罗湖分公司」检漏工单数: 标准 0.0 / CLI 73.0</td></tr><tr><td>VALUE_DIFF</td><td>莲塘供水</td><td>单月产销差率</td><td class="diff-expected">0.1459</td><td class="diff-actual">0.1257</td><td class="diff-delta">-0.0202</td><td>「莲塘供水」单月产销差率: 标准 0.1459 / CLI 0.1257</td></tr><tr><td>VALUE_DIFF</td><td>南山分公司</td><td>检漏工单数</td><td class="diff-expected">1</td><td class="diff-actual">77</td><td class="diff-delta">76</td><td>「南山分公司」检漏工单数: 标准 1.0 / CLI 77.0</td></tr><tr><td>VALUE_DIFF</td><td>盐田分公司</td><td>单月产销差率</td><td class="diff-expected">0.1035</td><td class="diff-actual">0.1292</td><td class="diff-delta">0.0257</td><td>「盐田分公司」单月产销差率: 标准 0.1035 / CLI 0.1292</td></tr><tr><td>VALUE_DIFF</td><td>盐田分公司</td><td>检漏工单数</td><td class="diff-expected">2</td><td class="diff-actual">19</td><td class="diff-delta">17</td><td>「盐田分公司」检漏工单数: 标准 2.0 / CLI 19.0</td></tr><tr><td>VALUE_DIFF</td><td>龙岗水务集团</td><td>检漏工单数</td><td class="diff-expected">166</td><td class="diff-actual">0</td><td class="diff-delta">-166</td><td>「龙岗水务集团」检漏工单数: 标准 166.0 / CLI 0.0</td></tr><tr><td>VALUE_DIFF</td><td>坪地供水</td><td>单月产销差率</td><td class="diff-expected">0.0625</td><td class="diff-actual">0.0772</td><td class="diff-delta">0.0147</td><td>「坪地供水」单月产销差率: 标准 0.0625 / CLI 0.0772</td></tr><tr><td>VALUE_DIFF</td><td>福田分公司</td><td>单月产销差率</td><td class="diff-expected">0.0459</td><td class="diff-actual">0.0799</td><td class="diff-delta">0.034</td><td>「福田分公司」单月产销差率: 标准 0.0459 / CLI 0.0799</td></tr><tr><td>VALUE_DIFF</td><td>福田分公司</td><td>检漏工单数</td><td class="diff-expected">15</td><td class="diff-actual">97</td><td class="diff-delta">82</td><td>「福田分公司」检漏工单数: 标准 15.0 / CLI 97.0</td></tr><tr><td>VALUE_DIFF</td><td>光明水务集团</td><td>检漏工单数</td><td class="diff-expected">19</td><td class="diff-actual">0</td><td class="diff-delta">-19</td><td>「光明水务集团」检漏工单数: 标准 19.0 / CLI 0.0</td></tr></tbody></table></div><p class="more">仅展示前 12 条，共 15 条</p>
+
+    <h4>根因</h4>
+    <p class="root">单月产销差率仍有 8 个单位不符：CLI month_diff_rate 的 periodType 只支持 1=日/2=月/3=年，当月值由年累计相减得到，标准值用 SzwgBusiness 单月快照；文档提到的 BothUcisMonth 口径尚未在 CLI 开放。检漏工单数已可核对（7 月 266 条，7 个单位不符）。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">在 CLI 上开放 BothUcisMonth（单月快照）口径的产销差率，或在 month_diff_rate 里直接返回单月值；在此之前不要把 month_diff_rate 当作单月口径的验收依据。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>盐田 202606：标准 0.1035（SQL SzwgBusiness 2539522/2276570）</li><li>CLI month_diff_rate 盐田 202606：0.1292（YTD 差 2614311/2276570）</li><li>检漏工单数：CLI 7 月 266 条，按 bz_bm 归出 4 个组织</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke month_diff_rate --json
+  --param periodType=2
+  --param dimensionType=1</code></pre><p class="cmd-note">本次返回 314 行</p><pre class="cmd"><code>python -m leakage_agent_cli invoke leak_detection_and_verification_work --json
+  --param create_time_start=2026-07-01 00:00:00
+  --param create_time_end=2026-07-31 23:59:59</code></pre><p class="cmd-note">本次返回 266 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;组织&quot; AS &quot;组织&quot;, ROUND((_g.rate)::numeric, 4) AS &quot;单月产销差率&quot;, CAST(_g.detect_cnt AS bigint) AS &quot;检漏工单数&quot;
+FROM (
+SELECT COALESCE(r.&quot;组织&quot;, o.&quot;组织&quot;) AS &quot;组织&quot;, r.rate AS rate, COALESCE(o.cnt, 0) AS detect_cnt
+FROM (
+  SELECT 
+CASE f.zoneid WHEN &#x27;F1&#x27; THEN &#x27;深圳环境水务集团&#x27;
+     WHEN &#x27;F100&#x27; THEN &#x27;集团本部&#x27;
+     WHEN &#x27;F1001&#x27; THEN &#x27;盐田分公司&#x27;
+     WHEN &#x27;F1002&#x27; THEN &#x27;罗湖分公司&#x27; WHEN &#x27;F1004&#x27; THEN &#x27;福田分公司&#x27; WHEN &#x27;F1003&#x27; THEN &#x27;南山分公司&#x27;
+     WHEN &#x27;F1007&#x27; THEN &#x27;宝安水务集团&#x27; WHEN &#x27;F1501&#x27; THEN &#x27;龙岗水务集团&#x27;
+     WHEN &#x27;F1500&#x27; THEN &#x27;龙华水务集团&#x27; WHEN &#x27;F1005&#x27; THEN &#x27;光明水务集团&#x27;
+     WHEN &#x27;F1012&#x27; THEN &#x27;大鹏新区分公司&#x27; WHEN &#x27;F1014&#x27; THEN &#x27;布吉水司&#x27;
+     WHEN &#x27;F1013&#x27; THEN &#x27;莲塘供水&#x27; WHEN &#x27;F1009&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;F1011&#x27; THEN &#x27;深汕水务&#x27;
+     ELSE f.zoneid END AS &quot;组织&quot;, (SUM(f.totalproduct)-SUM(f.totalconsume))/NULLIF(SUM(f.totalproduct),0) AS rate
+  FROM dwd_lsxt_fqcxfx f
+  WHERE f.periodtype=&#x27;SzwgBusiness&#x27; AND f.businessyearmonth=CAST(202606 AS int)
+  GROUP BY f.zoneid
+) r
+FULL JOIN (
+  SELECT CASE bz_bm WHEN &#x27;坪地分公司&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;莲塘分公司&#x27; THEN &#x27;莲塘供水&#x27;
+     ELSE bz_bm END AS &quot;组织&quot;, COUNT(*) AS cnt
+  FROM dwd_gdgl_gd_jlmx
+  WHERE create_time&gt;=CAST(&#x27;2026-06-01&#x27; AS date) + INTERVAL &#x27;1 month&#x27;
+    AND create_time&lt;CAST(&#x27;2026-06-01&#x27; AS date) + INTERVAL &#x27;2 months&#x27;
+  GROUP BY 1
+) o ON r.&quot;组织&quot; = o.&quot;组织&quot;
+ORDER BY rate DESC NULLS LAST, 1 ASC
+) _g
+ORDER BY &quot;单月产销差率&quot; DESC NULLS LAST, 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="BJ-003">
+<details class="case">
+  <summary>
+    <span class="case-id">BJ-003</span>
+    <span class="badge fail">数值不符</span>
+    <span class="case-q">上月夜间小流量预警频次最高的前10个小区 DMA 分别是哪些？列出编码、名称、单位和预警次数。</span>
+    <span class="case-summary">558 条 / TOP10</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>BJ</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>DMA编码</th><th>DMA名称</th><th>组织</th><th>预警次数</th></tr></thead><tbody><tr><td>300045</td><td>（二级）牛始埔老村片区</td><td>龙岗水务集团</td><td>28</td></tr><tr><td>300046</td><td>（二级）创新路、牛始埔路片区</td><td>龙岗水务集团</td><td>25</td></tr><tr><td>none</td><td>—</td><td>南山分公司</td><td>15</td></tr><tr><td>1101152008</td><td>盐田半山半海花园</td><td>盐田分公司</td><td>7</td></tr><tr><td>153023</td><td>盐田江屋安置房</td><td>盐田分公司</td><td>5</td></tr><tr><td>lh1733990074</td><td>赤岭头新一村</td><td>龙华水务集团</td><td>5</td></tr><tr><td>152002</td><td>大梅沙村（自然村）</td><td>盐田分公司</td><td>4</td></tr><tr><td>lt138054</td><td>富达花园</td><td>其他</td><td>4</td></tr><tr><td>143222</td><td>北头豪苑</td><td>南山分公司</td><td>3</td></tr><tr><td>lh1732390068</td><td>壹成中心九区</td><td>龙华水务集团</td><td>3</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>DMA编码</th><th>预警次数</th><th>DMA名称</th><th>组织</th></tr></thead><tbody><tr><td>300045</td><td>29</td><td>（二级）牛始埔老村片区</td><td>龙岗水务集团</td></tr><tr><td>300046</td><td>25</td><td>（二级）创新路、牛始埔路片区</td><td>龙岗水务集团</td></tr><tr><td>1101152008</td><td>8</td><td>盐田半山半海花园</td><td>盐田分公司</td></tr><tr><td>153023</td><td>5</td><td>盐田江屋安置房</td><td>盐田分公司</td></tr><tr><td>LH1733990074</td><td>5</td><td>赤岭头新一村</td><td>龙华水务集团</td></tr><tr><td>152002</td><td>4</td><td>大梅沙村（自然村）</td><td>盐田分公司</td></tr><tr><td>LT138054</td><td>4</td><td>富达花园</td><td>莲塘供水</td></tr><tr><td>131164</td><td>3</td><td>福源花园一期</td><td>福田分公司</td></tr><tr><td>143222</td><td>3</td><td>北头豪苑</td><td>南山分公司</td></tr><tr><td>152005</td><td>3</td><td>盐田九号小区</td><td>盐田分公司</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <div class="table-wrap"><table><thead><tr><th>类型</th><th>键</th><th>字段</th><th>标准值</th><th>CLI 值</th><th>差值</th><th>说明</th></tr></thead><tbody><tr><td>VALUE_DIFF</td><td>300045</td><td>预警次数</td><td class="diff-expected">29</td><td class="diff-actual">28</td><td class="diff-delta">-1</td><td>「300045」预警次数: 标准 29.0 / CLI 28.0</td></tr><tr><td>VALUE_DIFF</td><td>1101152008</td><td>预警次数</td><td class="diff-expected">8</td><td class="diff-actual">7</td><td class="diff-delta">-1</td><td>「1101152008」预警次数: 标准 8.0 / CLI 7.0</td></tr><tr><td>MISSING_ROW</td><td>131164</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「131164」</td></tr><tr><td>MISSING_ROW</td><td>152005</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「152005」</td></tr></tbody></table></div>
+
+    <h4>根因</h4>
+    <p class="root">TOP10 的 DMA 编码或预警次数与标准值不一致；需确认是否因数据更新或 dmaid 空值被剔除。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">确认 NightFlow 的 srctype 枚举和 warndate 边界；客户端需按 dmaid 去空、计数后取前 10。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>CLI July NightFlow 558 条，按 dmaid 计数取前 10</li><li>本次标准 SQL 同口径 549 条，TOP10 为 29/25/8/5/5/4/4/3/3/3</li><li>CLI TOP10 少 1 条计数、缺 2 个 DMA，说明明细接口与 dwd_lsxt_bj 行集不一致</li><li>srctype 实际存在 NightFlow，映射表未列出该枚举值</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke leakage_warning_information --json
+  --param srctype=NightFlow
+  --param warndate_start=2026-07-01</code></pre><p class="cmd-note">本次返回 558 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;DMA编码&quot; AS &quot;DMA编码&quot;, _g.&quot;DMA名称&quot; AS &quot;DMA名称&quot;, _g.&quot;组织&quot; AS &quot;组织&quot;, CAST(_g.cnt AS bigint) AS &quot;预警次数&quot;
+FROM (
+SELECT dmaid AS &quot;DMA编码&quot;, MAX(dmaname) AS &quot;DMA名称&quot;, CASE
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1014%%&#x27; THEN &#x27;布吉水司&#x27;
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1013%%&#x27; THEN &#x27;莲塘供水&#x27;
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1009%%&#x27; THEN &#x27;坪地供水&#x27;
+    ELSE bz_bm
+END AS &quot;组织&quot;, COUNT(*) AS cnt
+FROM dwd_lsxt_bj
+WHERE srctype=&#x27;NightFlow&#x27; AND warndate::date&gt;=CAST(&#x27;2026-07-01&#x27; AS date) AND warndate::date&lt;CAST(&#x27;2026-08-01&#x27; AS date) AND dmaid IS NOT NULL
+GROUP BY dmaid, CASE
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1014%%&#x27; THEN &#x27;布吉水司&#x27;
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1013%%&#x27; THEN &#x27;莲塘供水&#x27;
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1009%%&#x27; THEN &#x27;坪地供水&#x27;
+    ELSE bz_bm
+END
+ORDER BY cnt DESC, dmaid ASC
+LIMIT 10
+) _g
+ORDER BY &quot;预警次数&quot; DESC</code></pre>
+  </div>
+</details>
+</div><div id="BJ-016">
+<details class="case">
+  <summary>
+    <span class="case-id">BJ-016</span>
+    <span class="badge fail">数值不符</span>
+    <span class="case-q">上月产生的漏损预警中，预警总数、未处理数和超过10天未处理数分别是多少？</span>
+    <span class="case-summary">11308 / 8663 / 6221</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>BJ</span></div>
+      <div><span class="meta-label">结果类型</span><span>stat</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>项目</th><th>值</th></tr></thead><tbody><tr><td>预警总数</td><td>11,308</td></tr><tr><td>未处理数</td><td>8,663</td></tr><tr><td>超时未处理数</td><td>6,221</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>指标</th><th>标准值</th><th>单位</th></tr></thead><tbody><tr><td>预警总数</td><td>11,558</td><td>count</td></tr><tr><td>未处理数</td><td>1</td><td>count</td></tr><tr><td>超时未处理数</td><td>1</td><td>count</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <div class="table-wrap"><table><thead><tr><th>类型</th><th>键</th><th>字段</th><th>标准值</th><th>CLI 值</th><th>差值</th><th>说明</th></tr></thead><tbody><tr><td>VALUE_DIFF</td><td>—</td><td>预警总数</td><td class="diff-expected">11,558</td><td class="diff-actual">11,308</td><td class="diff-delta">-250</td><td>预警总数: 标准 11558.0 / CLI 11308.0</td></tr><tr><td>VALUE_DIFF</td><td>—</td><td>未处理数</td><td class="diff-expected">1</td><td class="diff-actual">8,663</td><td class="diff-delta">8,662</td><td>未处理数: 标准 1.0 / CLI 8663.0</td></tr><tr><td>VALUE_DIFF</td><td>—</td><td>超时未处理数</td><td class="diff-expected">1</td><td class="diff-actual">6,221</td><td class="diff-delta">6,220</td><td>超时未处理数: 标准 1.0 / CLI 6221.0</td></tr></tbody></table></div>
+
+    <h4>根因</h4>
+    <p class="root">CLI 明细 7 月返回 11308 条，标准 SQL 是 11558 条，少 250 条。更严重的是 handled 字段语义不一致：CLI 中 handled=None 8662 条、True 2645 条、False 1 条，而库表 NOT handled 只有 1 条；handldate / handlperson 在 8664 条上同时为空。这说明 leakage_warning_information 的 handled 不是 dwd_lsxt_bj.handled，不能用来算「未处理数/超 10 天未处理数」。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">请大数据确认 leakage_warning_information 的底层表/视图及 handled 字段来源：要么返回与 dwd_lsxt_bj.handled 同源的字段，要么提供一个按月汇总的预警统计命令（总数/未处理/超时未处理），否则这题只能核对总数，且总数也差 250 条。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>CLI 7 月全类型 11308 条；标准 SQL 11558 条，差 250</li><li>CLI handled 分布：None 8662 / True 2645 / False 1；handldate 为空 8664</li><li>标准 SQL（dwd_lsxt_bj）：NOT handled = 1</li><li>status_name 全为「准确」，这是数据质量标记，不是处置状态</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke leakage_warning_information --json
+  --param warndate_start=2026-07-01</code></pre><p class="cmd-note">本次返回 11308 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT CAST(_g.total_cnt AS bigint) AS &quot;预警总数&quot;, CAST(_g.unhandled_cnt AS bigint) AS &quot;未处理数&quot;, CAST(_g.overdue_cnt AS bigint) AS &quot;超时未处理数&quot;
+FROM (
+SELECT COUNT(*) AS total_cnt,
+       COUNT(*) FILTER (WHERE NOT handled) AS unhandled_cnt,
+       COUNT(*) FILTER (WHERE NOT handled
+              AND warndate::date &lt; CAST(&#x27;2026-07-31&#x27; AS date) - 10) AS overdue_cnt
+FROM dwd_lsxt_bj
+WHERE warndate::date&gt;=CAST(&#x27;2026-07-01&#x27; AS date) AND warndate::date&lt;CAST(&#x27;2026-08-01&#x27; AS date)
+) _g</code></pre>
+  </div>
+</details>
+</div><div id="BJ-017">
+<details class="case">
+  <summary>
+    <span class="case-id">BJ-017</span>
+    <span class="badge pass">通过</span>
+    <span class="case-q">按管径分段列出上月爆管事件在各单位的发生情况，并下钻到三级部门。</span>
+    <span class="case-summary">56 组（管径×单位）</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>BJ</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>管径分段</th><th>组织</th><th>三级部门</th><th>爆管次数</th></tr></thead><tbody><tr><td>1000毫米及以上</td><td>福田分公司</td><td>福中所</td><td>1</td></tr><tr><td>400至不足600</td><td>盐田分公司</td><td>盐田所</td><td>1</td></tr><tr><td>400至不足600</td><td>南山分公司</td><td>蛇口所</td><td>1</td></tr><tr><td>600至不足1000</td><td>宝安水务集团</td><td>松岗水务运营中心</td><td>6</td></tr><tr><td>600至不足1000</td><td>福田分公司</td><td>福中所</td><td>1</td></tr><tr><td>不足400</td><td>龙岗水务集团</td><td>龙城水务运营中心</td><td>558</td></tr><tr><td>不足400</td><td>龙华水务集团</td><td>龙华运营中心</td><td>143</td></tr><tr><td>不足400</td><td>南山分公司</td><td>西丽所</td><td>104</td></tr><tr><td>不足400</td><td>福田分公司</td><td>香蜜所</td><td>90</td></tr><tr><td>不足400</td><td>罗湖分公司</td><td>黄贝所</td><td>86</td></tr><tr><td>不足400</td><td>宝安水务集团</td><td>福永水务运营中心</td><td>58</td></tr><tr><td>不足400</td><td>大鹏新区水务</td><td>葵涌水务运营中心</td><td>58</td></tr><tr><td>不足400</td><td>光明水务集团</td><td>玉凤运营中心</td><td>55</td></tr><tr><td>不足400</td><td>盐田分公司</td><td>盐田所</td><td>18</td></tr><tr><td>不足400</td><td>坪地供水</td><td>—</td><td>12</td></tr><tr><td>不足400</td><td>莲塘供水</td><td>—</td><td>3</td></tr><tr><td>不足400</td><td>深汕水务</td><td>鲘门水务所</td><td>2</td></tr><tr><td>未知</td><td>龙华水务集团</td><td>龙华运营中心</td><td>34</td></tr><tr><td>未知</td><td>宝安水务集团</td><td>福永水务运营中心</td><td>28</td></tr><tr><td>未知</td><td>南山分公司</td><td>西丽所</td><td>23</td></tr></tbody></table></div><p class="more">仅展示前 20 行，共 27 行</p>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>管径分段</th><th>组织</th><th>三级部门</th><th>爆管次数</th></tr></thead><tbody><tr><td>1000毫米及以上</td><td>福田分公司</td><td>福中所</td><td>1</td></tr><tr><td>400至不足600</td><td>南山分公司</td><td>蛇口所</td><td>1</td></tr><tr><td>400至不足600</td><td>盐田分公司</td><td>盐田所</td><td>1</td></tr><tr><td>600至不足1000</td><td>宝安水务集团</td><td>松岗水务运营中心</td><td>6</td></tr><tr><td>600至不足1000</td><td>福田分公司</td><td>福中所</td><td>1</td></tr><tr><td>不足400</td><td>龙岗水务集团</td><td>龙城水务运营中心</td><td>558</td></tr><tr><td>不足400</td><td>龙华水务集团</td><td>龙华运营中心</td><td>143</td></tr><tr><td>不足400</td><td>南山分公司</td><td>西丽所</td><td>104</td></tr><tr><td>不足400</td><td>福田分公司</td><td>香蜜所</td><td>90</td></tr><tr><td>不足400</td><td>罗湖分公司</td><td>黄贝所</td><td>86</td></tr><tr><td>不足400</td><td>大鹏新区分公司</td><td>葵涌水务运营中心</td><td>58</td></tr><tr><td>不足400</td><td>宝安水务集团</td><td>福永水务运营中心</td><td>58</td></tr><tr><td>不足400</td><td>光明水务集团</td><td>玉凤运营中心</td><td>55</td></tr><tr><td>不足400</td><td>盐田分公司</td><td>盐田所</td><td>18</td></tr><tr><td>不足400</td><td>坪地供水</td><td>—</td><td>12</td></tr><tr><td>不足400</td><td>莲塘供水</td><td>—</td><td>3</td></tr><tr><td>不足400</td><td>深汕水务</td><td>鲘门水务所</td><td>2</td></tr><tr><td>未知</td><td>龙华水务集团</td><td>龙华运营中心</td><td>34</td></tr><tr><td>未知</td><td>宝安水务集团</td><td>福永水务运营中心</td><td>28</td></tr><tr><td>未知</td><td>南山分公司</td><td>西丽所</td><td>23</td></tr></tbody></table></div><p class="more">仅展示前 20 行，共 27 行</p>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <p class="ok">无差异</p>
+
+    <h4>根因</h4>
+    <p class="root"></p>
+
+    <h4>优化建议</h4>
+    <p class="recommend"></p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>water_supply_pipe_maintenance_work 7 月 3405 条</li><li>筛选后 27 组（管径分段×单位），标准值 27 组</li><li>明细字段 caliber、level3_name、accident_type、flow_status_name 均已返回</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke water_supply_pipe_maintenance_work --json
+  --param create_time_start=2026-07-01 00:00:00
+  --param create_time_end=2026-07-31 23:59:59</code></pre><p class="cmd-note">本次返回 3405 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;管径分段&quot; AS &quot;管径分段&quot;, _g.&quot;组织&quot; AS &quot;组织&quot;, _g.&quot;三级部门&quot; AS &quot;三级部门&quot;, CAST(_g.cnt AS bigint) AS &quot;爆管次数&quot;
+FROM (
+SELECT seg AS &quot;管径分段&quot;, &quot;组织&quot;, MAX(level3) AS &quot;三级部门&quot;, COUNT(*) AS cnt
+FROM (
+  SELECT CASE WHEN NULLIF(caliber,&#x27;&#x27;)::numeric IS NULL THEN &#x27;未知&#x27;
+              WHEN NULLIF(caliber,&#x27;&#x27;)::numeric&gt;=1000 THEN &#x27;1000毫米及以上&#x27;
+              WHEN NULLIF(caliber,&#x27;&#x27;)::numeric&gt;=600 THEN &#x27;600至不足1000&#x27;
+              WHEN NULLIF(caliber,&#x27;&#x27;)::numeric&gt;=400 THEN &#x27;400至不足600&#x27;
+              ELSE &#x27;不足400&#x27; END AS seg,
+         CASE bz_bm WHEN &#x27;坪地分公司&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;莲塘分公司&#x27; THEN &#x27;莲塘供水&#x27;
+     ELSE bz_bm END AS &quot;组织&quot;, level3_name AS level3
+  FROM dwd_gdgl_gd_gsgdwxmx
+  WHERE create_time&gt;=CAST(&#x27;2026-07-01&#x27; AS timestamp) AND create_time&lt;CAST(&#x27;2026-08-01&#x27; AS timestamp) AND (accident_type LIKE &#x27;%%爆%%&#x27; OR flow_status_name LIKE &#x27;%%爆管%%&#x27;)
+) t
+GROUP BY 1, 2
+ORDER BY 1 ASC, cnt DESC
+) _g
+ORDER BY 1 ASC, &quot;爆管次数&quot; DESC</code></pre>
+  </div>
+</details>
+</div><div id="DMA-002">
+<details class="case">
+  <summary>
+    <span class="case-id">DMA-002</span>
+    <span class="badge pass">通过</span>
+    <span class="case-q">列出各单位目前在用的居民小区 DMA 数量及在全集团的占比。</span>
+    <span class="case-summary">5675 条 / 12 个组织</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>DMA</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>DMA数</th><th>集团占比</th></tr></thead><tbody><tr><td>宝安水务集团</td><td>1,146</td><td>0.2018</td></tr><tr><td>龙岗水务集团</td><td>843</td><td>0.1484</td></tr><tr><td>南山分公司</td><td>708</td><td>0.1247</td></tr><tr><td>福田分公司</td><td>677</td><td>0.1192</td></tr><tr><td>龙华水务集团</td><td>673</td><td>0.1185</td></tr><tr><td>罗湖分公司</td><td>616</td><td>0.1085</td></tr><tr><td>布吉水司</td><td>339</td><td>0.0597</td></tr><tr><td>盐田分公司</td><td>236</td><td>0.0416</td></tr><tr><td>光明水务集团</td><td>233</td><td>0.041</td></tr><tr><td>莲塘供水</td><td>85</td><td>0.015</td></tr><tr><td>坪地供水</td><td>67</td><td>0.0118</td></tr><tr><td>大鹏新区水务</td><td>56</td><td>0.0099</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>DMA数</th><th>集团占比</th></tr></thead><tbody><tr><td>宝安水务集团</td><td>1,146</td><td>0.2018</td></tr><tr><td>龙岗水务集团</td><td>843</td><td>0.1484</td></tr><tr><td>南山分公司</td><td>708</td><td>0.1247</td></tr><tr><td>福田分公司</td><td>677</td><td>0.1192</td></tr><tr><td>龙华水务集团</td><td>673</td><td>0.1185</td></tr><tr><td>罗湖分公司</td><td>616</td><td>0.1085</td></tr><tr><td>布吉水司</td><td>339</td><td>0.0597</td></tr><tr><td>盐田分公司</td><td>236</td><td>0.0416</td></tr><tr><td>光明水务集团</td><td>233</td><td>0.041</td></tr><tr><td>莲塘供水</td><td>85</td><td>0.015</td></tr><tr><td>坪地供水</td><td>67</td><td>0.0118</td></tr><tr><td>大鹏新区分公司</td><td>56</td><td>0.0099</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <p class="ok">无差异</p>
+
+    <h4>根因</h4>
+    <p class="root">CLI status=WORK 全量 5679 条，按 bz_bm 分组后与本次标准 SQL（5679 条、12 个组织）完全一致。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">口径可用。建议大数据把 status=WORK 的计数直接做成指标命令，避免每次翻 114 页；另需确认「在用」是否只等于 status=WORK。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>CLI 全量 5679 条；本次标准 SQL 同口径 5679 条</li><li>12 个组织分组结果全部命中</li><li>CLI 分页：pageNumber=1 起，pageSize 实测上限 50</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke dma_basic_information --json
+  --param status=WORK</code></pre><p class="cmd-note">本次返回 5679 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;组织&quot; AS &quot;组织&quot;, CAST(_g.cnt AS bigint) AS &quot;DMA数&quot;, ROUND((_g.share)::numeric, 4) AS &quot;集团占比&quot;
+FROM (
+SELECT CASE
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1014%%&#x27; THEN &#x27;布吉水司&#x27;
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1013%%&#x27; THEN &#x27;莲塘供水&#x27;
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1009%%&#x27; THEN &#x27;坪地供水&#x27;
+    ELSE bz_bm
+END AS &quot;组织&quot;, COUNT(*) AS cnt, COUNT(*)*1.0/NULLIF(SUM(COUNT(*)) OVER (),0) AS share
+FROM dwd_lsxt_dma
+WHERE status=&#x27;WORK&#x27;
+GROUP BY 1
+ORDER BY cnt DESC, 1 ASC
+) _g
+ORDER BY &quot;DMA数&quot; DESC, 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="DMA-026">
+<details class="case">
+  <summary>
+    <span class="case-id">DMA-026</span>
+    <span class="badge partial">部分可测</span>
+    <span class="case-q">各单位2026年6月的DMA漏损量、DMA小区数及上半年产销差率分别是多少？</span>
+    <span class="case-summary">率 15 个单位；漏损/小区数缺</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>DMA</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>累计产销差率</th><th>DMA漏损量</th><th>DMA小区数</th></tr></thead><tbody><tr><td>龙华水务集团</td><td>0.0572</td><td>—</td><td>—</td></tr><tr><td>龙岗水务集团</td><td>0.0959</td><td>—</td><td>—</td></tr><tr><td>布吉水司</td><td>0.0623</td><td>—</td><td>—</td></tr><tr><td>南山分公司</td><td>0.1203</td><td>—</td><td>—</td></tr><tr><td>福田分公司</td><td>0.0665</td><td>—</td><td>—</td></tr><tr><td>罗湖分公司</td><td>0.1208</td><td>—</td><td>—</td></tr><tr><td>盐田分公司</td><td>0.0936</td><td>—</td><td>—</td></tr><tr><td>莲塘供水</td><td>0.1404</td><td>—</td><td>—</td></tr><tr><td>坪地供水</td><td>0.0742</td><td>—</td><td>—</td></tr><tr><td>大鹏新区水务</td><td>0.1216</td><td>—</td><td>—</td></tr><tr><td>光明水务集团</td><td>0.0272</td><td>—</td><td>—</td></tr><tr><td>宝安水务集团</td><td>0.0545</td><td>—</td><td>—</td></tr><tr><td>集团</td><td>0.0754</td><td>—</td><td>—</td></tr><tr><td>深汕水务</td><td>0.1011</td><td>—</td><td>—</td></tr><tr><td>集团本部</td><td>0.0991</td><td>—</td><td>—</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>累计产销差率</th><th>DMA漏损量</th><th>DMA小区数</th></tr></thead><tbody><tr><td>龙华水务集团</td><td>0.0572</td><td>2,171,947.94</td><td>637</td></tr><tr><td>龙岗水务集团</td><td>0.0959</td><td>2,167,433.72</td><td>802</td></tr><tr><td>布吉水司</td><td>0.0623</td><td>1,083,617.90</td><td>319</td></tr><tr><td>南山分公司</td><td>0.1203</td><td>596,772.45</td><td>672</td></tr><tr><td>福田分公司</td><td>0.0665</td><td>484,990.48</td><td>596</td></tr><tr><td>罗湖分公司</td><td>0.1208</td><td>461,501.73</td><td>549</td></tr><tr><td>盐田分公司</td><td>0.0936</td><td>121,565.52</td><td>233</td></tr><tr><td>莲塘供水</td><td>0.1404</td><td>81,232.95</td><td>55</td></tr><tr><td>坪地供水</td><td>0.0742</td><td>51,149.35</td><td>27</td></tr><tr><td>大鹏新区分公司</td><td>0.1216</td><td>6,852.63</td><td>50</td></tr><tr><td>光明水务集团</td><td>0.0272</td><td>—</td><td>—</td></tr><tr><td>宝安水务集团</td><td>0.0545</td><td>—</td><td>—</td></tr><tr><td>深圳环境水务集团</td><td>0.0754</td><td>—</td><td>—</td></tr><tr><td>深汕水务</td><td>0.1011</td><td>—</td><td>—</td></tr><tr><td>集团本部</td><td>0.0991</td><td>—</td><td>—</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <p class="ok">可对列无差异；不可对列见根因</p>
+
+    <h4>根因</h4>
+    <p class="root">累计产销差率可由 year_cum_diff_rate 直接对应；DMA 漏损量在标准值里来自 dwd_lsxt_wlls.physicalloss（diffresult=&#x27;GOOD&#x27;），DMA 小区数是该表去重 dmaid 数。CLI 没有 wlls/physicalloss 对应命令：month_loss_water 是总漏损量（福田 1,390,993 vs 标准 484,990），month_physical_leakage_amount 是日粒度 2,134 行，均不能直接替代。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">新增一个按组织聚合的 DMA 物理漏损命令（SUM(physicalloss) + COUNT(DISTINCT dmaid)），或在 leakage_analysis_information 暴露可对齐 wlls 的字段；否则该题只能核对产销差率一列。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>累计产销差率来自 year_cum_diff_rate 202606</li><li>month_loss_water 202606 福田 1,390,993 → 标准 DMA漏损量 484,990</li><li>month_physical_leakage_amount 返回 2,134 行日粒度数据</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke year_cum_diff_rate --json
+  --param dimensionType=1</code></pre><p class="cmd-note">本次返回 314 行</p><pre class="cmd"><code>python -m leakage_agent_cli invoke month_loss_water --json
+  --param periodType=2</code></pre><p class="cmd-note">本次返回 314 行；口径不可替代</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;组织&quot; AS &quot;组织&quot;, ROUND((_g.rate)::numeric, 4) AS &quot;累计产销差率&quot;, ROUND((_g.loss_vol)::numeric, 4) AS &quot;DMA漏损量&quot;, CAST(_g.dma_cnt AS bigint) AS &quot;DMA小区数&quot;
+FROM (
+SELECT COALESCE(w.&quot;组织&quot;, r.&quot;组织&quot;) AS &quot;组织&quot;, r.rate AS rate,
+       w.loss_vol AS loss_vol, w.dma_cnt AS dma_cnt
+FROM (
+  SELECT CASE
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1014%%&#x27; THEN &#x27;布吉水司&#x27;
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1013%%&#x27; THEN &#x27;莲塘供水&#x27;
+    WHEN bz_bm = &#x27;其他&#x27; AND zonecode LIKE &#x27;%%F1009%%&#x27; THEN &#x27;坪地供水&#x27;
+    ELSE bz_bm
+END AS &quot;组织&quot;, SUM(w.physicalloss) AS loss_vol, COUNT(DISTINCT w.dmaid) AS dma_cnt
+  FROM dwd_lsxt_wlls w
+  WHERE periodtype=&#x27;Day&#x27; AND diffresult=&#x27;GOOD&#x27; AND w.taskstart::date &gt;= CAST(&#x27;2026-06-01&#x27; AS date)
+    AND w.taskstart::date &lt;= CAST(&#x27;2026-06-30&#x27; AS date)
+  GROUP BY 1
+) w
+FULL JOIN (
+  SELECT 
+CASE f.zoneid WHEN &#x27;F1&#x27; THEN &#x27;深圳环境水务集团&#x27;
+     WHEN &#x27;F100&#x27; THEN &#x27;集团本部&#x27;
+     WHEN &#x27;F1001&#x27; THEN &#x27;盐田分公司&#x27;
+     WHEN &#x27;F1002&#x27; THEN &#x27;罗湖分公司&#x27; WHEN &#x27;F1004&#x27; THEN &#x27;福田分公司&#x27; WHEN &#x27;F1003&#x27; THEN &#x27;南山分公司&#x27;
+     WHEN &#x27;F1007&#x27; THEN &#x27;宝安水务集团&#x27; WHEN &#x27;F1501&#x27; THEN &#x27;龙岗水务集团&#x27;
+     WHEN &#x27;F1500&#x27; THEN &#x27;龙华水务集团&#x27; WHEN &#x27;F1005&#x27; THEN &#x27;光明水务集团&#x27;
+     WHEN &#x27;F1012&#x27; THEN &#x27;大鹏新区分公司&#x27; WHEN &#x27;F1014&#x27; THEN &#x27;布吉水司&#x27;
+     WHEN &#x27;F1013&#x27; THEN &#x27;莲塘供水&#x27; WHEN &#x27;F1009&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;F1011&#x27; THEN &#x27;深汕水务&#x27;
+     ELSE f.zoneid END AS &quot;组织&quot;, (SUM(f.totalproduct)-SUM(f.totalconsume))/NULLIF(SUM(f.totalproduct),0) AS rate
+  FROM dwd_lsxt_fqcxfx f
+  WHERE f.periodtype=&#x27;SzwgBusinessYear&#x27; AND f.businessyearmonth=CAST(202606 AS int)
+  GROUP BY f.zoneid
+) r ON w.&quot;组织&quot; = r.&quot;组织&quot;
+ORDER BY loss_vol DESC NULLS LAST, 1 ASC
+) _g
+ORDER BY &quot;DMA漏损量&quot; DESC NULLS LAST, 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="JL-016">
+<details class="case">
+  <summary>
+    <span class="case-id">JL-016</span>
+    <span class="badge pass">通过</span>
+    <span class="case-q">上月各单位供水管道维修工单记录的漏损水量合计是多少立方米？</span>
+    <span class="case-summary">工单可调取；漏损量字段缺</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>JL</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>工单数</th><th>维修漏损水量</th></tr></thead><tbody><tr><td>光明水务集团</td><td>258</td><td>1,720.13</td></tr><tr><td>其他</td><td>1</td><td>—</td></tr><tr><td>南山分公司</td><td>399</td><td>9,448.92</td></tr><tr><td>坪地供水</td><td>45</td><td>535.1</td></tr><tr><td>大鹏新区水务</td><td>69</td><td>281.2</td></tr><tr><td>宝安水务集团</td><td>433</td><td>7,395.76</td></tr><tr><td>深汕水务</td><td>8</td><td>13.1</td></tr><tr><td>盐田分公司</td><td>78</td><td>332</td></tr><tr><td>福田分公司</td><td>440</td><td>4,103.15</td></tr><tr><td>罗湖分公司</td><td>270</td><td>124,075</td></tr><tr><td>莲塘供水</td><td>7</td><td>0.3</td></tr><tr><td>龙华水务集团</td><td>428</td><td>932.45</td></tr><tr><td>龙岗水务集团</td><td>969</td><td>1,655.08</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>维修漏损水量</th></tr></thead><tbody><tr><td>光明水务集团</td><td>1,720.13</td></tr><tr><td>其他</td><td>—</td></tr><tr><td>南山分公司</td><td>9,448.92</td></tr><tr><td>坪地供水</td><td>535.1</td></tr><tr><td>大鹏新区分公司</td><td>281.2</td></tr><tr><td>宝安水务集团</td><td>7,395.76</td></tr><tr><td>深汕水务</td><td>13.1</td></tr><tr><td>盐田分公司</td><td>332</td></tr><tr><td>福田分公司</td><td>4,103.15</td></tr><tr><td>罗湖分公司</td><td>124,075</td></tr><tr><td>莲塘供水</td><td>0.3</td></tr><tr><td>龙华水务集团</td><td>932.45</td></tr><tr><td>龙岗水务集团</td><td>1,655.08</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <p class="ok">无差异</p>
+
+    <h4>根因</h4>
+    <p class="root"></p>
+
+    <h4>优化建议</h4>
+    <p class="recommend"></p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>water_supply_pipe_maintenance_work 7 月 3405 条，13 个组织</li><li>water_leakage 非空 2452 条</li><li>标准值 13 行，合计漏损水量 150492.19 m³</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke water_supply_pipe_maintenance_work --json
+  --param create_time_start=2026-07-01 00:00:00
+  --param create_time_end=2026-07-31 23:59:59</code></pre><p class="cmd-note">本次返回 3405 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;组织&quot; AS &quot;组织&quot;, ROUND((_g.loss_vol)::numeric, 4) AS &quot;维修漏损水量&quot;
+FROM (
+SELECT CASE bz_bm WHEN &#x27;坪地分公司&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;莲塘分公司&#x27; THEN &#x27;莲塘供水&#x27;
+     ELSE bz_bm END AS &quot;组织&quot;, SUM(NULLIF(water_leakage,&#x27;&#x27;)::numeric) AS loss_vol
+FROM dwd_gdgl_gd_gsgdwxmx
+WHERE create_time&gt;=CAST(&#x27;2026-07-01&#x27; AS timestamp) AND create_time&lt;CAST(&#x27;2026-08-01&#x27; AS timestamp)
+GROUP BY 1
+ORDER BY 1 ASC
+) _g
+ORDER BY 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="JL-019">
+<details class="case">
+  <summary>
+    <span class="case-id">JL-019</span>
+    <span class="badge fail">数值不符</span>
+    <span class="case-q">上月创建的最新10条检漏工单分别是哪些？列出工单编号、所属单位、标题和创建时间。</span>
+    <span class="case-summary">7 月最新 10 条</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>JL</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>工单编号</th><th>组织</th><th>标题</th><th>创建时间</th></tr></thead><tbody><tr><td>WS20260731Y2062</td><td>福田分公司</td><td>检漏核量</td><td>2026-07-31 16:59:55</td></tr><tr><td>WS20260731Y2006</td><td>南山分公司</td><td>检漏核量</td><td>2026-07-31 16:22:34</td></tr><tr><td>WS20260731Y1973</td><td>福田分公司</td><td>检漏核量</td><td>2026-07-31 16:03:32</td></tr><tr><td>WS20260731Y1722</td><td>南山分公司</td><td>检漏核量</td><td>2026-07-31 12:40:33</td></tr><tr><td>WS20260731Y1659</td><td>福田分公司</td><td>检漏核量</td><td>2026-07-31 11:36:32</td></tr><tr><td>WS20260731Y1459</td><td>罗湖分公司</td><td>检漏核量</td><td>2026-07-31 11:00:12</td></tr><tr><td>WS20260731Y1428</td><td>罗湖分公司</td><td>检漏核量</td><td>2026-07-31 10:49:14</td></tr><tr><td>WS20260731Y1238</td><td>福田分公司</td><td>检漏核量</td><td>2026-07-31 09:47:05</td></tr><tr><td>WS20260730Y2448</td><td>福田分公司</td><td>检漏核量</td><td>2026-07-30 23:57:38</td></tr><tr><td>WS20260730Y2437</td><td>盐田分公司</td><td>检漏核量</td><td>2026-07-30 22:46:31</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>工单编号</th><th>组织</th><th>标题</th><th>创建时间</th></tr></thead><tbody><tr><td>WS20260731Y2320</td><td>龙岗水务集团</td><td>物理漏损</td><td>2026-07-31 19:20:24+08:00</td></tr><tr><td>WS20260731Y2319</td><td>龙岗水务集团</td><td>夜间小流</td><td>2026-07-31 19:18:42+08:00</td></tr><tr><td>WS20260731Y2317</td><td>龙岗水务集团</td><td>物理漏损</td><td>2026-07-31 19:17:11+08:00</td></tr><tr><td>WS20260731Y2314</td><td>龙岗水务集团</td><td>物理漏损</td><td>2026-07-31 19:14:04+08:00</td></tr><tr><td>WS20260731Y2313</td><td>龙岗水务集团</td><td>物理漏损</td><td>2026-07-31 19:12:26+08:00</td></tr><tr><td>WS20260731Y2312</td><td>龙岗水务集团</td><td>物理漏损</td><td>2026-07-31 19:11:58+08:00</td></tr><tr><td>WS20260731Y2311</td><td>龙岗水务集团</td><td>物理漏损</td><td>2026-07-31 19:11:03+08:00</td></tr><tr><td>WS20260731Y2309</td><td>龙岗水务集团</td><td>物理漏损</td><td>2026-07-31 19:06:45+08:00</td></tr><tr><td>WS20260731Y2307</td><td>龙岗水务集团</td><td>物理漏损</td><td>2026-07-31 19:05:48+08:00</td></tr><tr><td>WS20260731Y2306</td><td>龙岗水务集团</td><td>物理漏损</td><td>2026-07-31 19:03:40+08:00</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <div class="table-wrap"><table><thead><tr><th>类型</th><th>键</th><th>字段</th><th>标准值</th><th>CLI 值</th><th>差值</th><th>说明</th></tr></thead><tbody><tr><td>MISSING_ROW</td><td>WS20260731Y2320</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「WS20260731Y2320」</td></tr><tr><td>MISSING_ROW</td><td>WS20260731Y2319</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「WS20260731Y2319」</td></tr><tr><td>MISSING_ROW</td><td>WS20260731Y2317</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「WS20260731Y2317」</td></tr><tr><td>MISSING_ROW</td><td>WS20260731Y2314</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「WS20260731Y2314」</td></tr><tr><td>MISSING_ROW</td><td>WS20260731Y2313</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「WS20260731Y2313」</td></tr><tr><td>MISSING_ROW</td><td>WS20260731Y2312</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「WS20260731Y2312」</td></tr><tr><td>MISSING_ROW</td><td>WS20260731Y2311</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「WS20260731Y2311」</td></tr><tr><td>MISSING_ROW</td><td>WS20260731Y2309</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「WS20260731Y2309」</td></tr><tr><td>MISSING_ROW</td><td>WS20260731Y2307</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「WS20260731Y2307」</td></tr><tr><td>MISSING_ROW</td><td>WS20260731Y2306</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「WS20260731Y2306」</td></tr></tbody></table></div>
+
+    <h4>根因</h4>
+    <p class="root">7 月 CLI 只有 266 条、覆盖 4 个单位（南山分公司、盐田分公司、福田分公司、罗湖分公司），与库表 dwd_gdgl_gd_jlmx 的行集不同，所以「最新 10 条」整批对不上；不是排序问题——两边的工单编号集合本身没有交集。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">确认明细接口的 create_time 边界（含 7-31 23:59:59）以及排序规则；如果接口本身不支持排序，客户端需拉全量后按 create_time DESC, id ASC 取前 10。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>leak_detection_and_verification_work 7 月 266 条</li><li>最新一条：WS20260731Y2062 / 2026-07-31 16:59:55</li><li>标准值 10 条，首条 WS20260731Y2320</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke leak_detection_and_verification_work --json
+  --param create_time_start=2026-07-01 00:00:00
+  --param create_time_end=2026-07-31 23:59:59</code></pre><p class="cmd-note">本次返回 266 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;工单编号&quot; AS &quot;工单编号&quot;, _g.&quot;组织&quot; AS &quot;组织&quot;, _g.&quot;标题&quot; AS &quot;标题&quot;, _g.&quot;创建时间&quot; AS &quot;创建时间&quot;
+FROM (
+SELECT id AS &quot;工单编号&quot;, CASE bz_bm WHEN &#x27;坪地分公司&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;莲塘分公司&#x27; THEN &#x27;莲塘供水&#x27;
+     ELSE bz_bm END AS &quot;组织&quot;, title AS &quot;标题&quot;, create_time AS &quot;创建时间&quot;
+FROM dwd_gdgl_gd_jlmx
+WHERE create_time&gt;=CAST(&#x27;2026-07-01&#x27; AS timestamp) AND create_time&lt;CAST(&#x27;2026-08-01&#x27; AS timestamp)
+ORDER BY create_time DESC, id ASC
+LIMIT 10
+) _g</code></pre>
+  </div>
+</details>
+</div><div id="JL-021">
+<details class="case">
+  <summary>
+    <span class="case-id">JL-021</span>
+    <span class="badge fail">数值不符</span>
+    <span class="case-q">上月各单位有到场记录的检漏工单平均响应时间分别是多少小时？</span>
+    <span class="case-summary">按组织平均响应</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>JL</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>有到场工单数</th><th>平均响应小时数</th></tr></thead><tbody><tr><td>南山分公司</td><td>70</td><td>11.1821</td></tr><tr><td>盐田分公司</td><td>19</td><td>27.0404</td></tr><tr><td>福田分公司</td><td>97</td><td>321.1788</td></tr><tr><td>罗湖分公司</td><td>73</td><td>1.428</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>平均响应小时数</th></tr></thead><tbody><tr><td>光明水务集团</td><td>0.948</td></tr><tr><td>南山分公司</td><td>0.8358</td></tr><tr><td>宝安水务集团</td><td>48.6406</td></tr><tr><td>盐田分公司</td><td>72.8793</td></tr><tr><td>福田分公司</td><td>68.4038</td></tr><tr><td>龙岗水务集团</td><td>130.3236</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <div class="table-wrap"><table><thead><tr><th>类型</th><th>键</th><th>字段</th><th>标准值</th><th>CLI 值</th><th>差值</th><th>说明</th></tr></thead><tbody><tr><td>MISSING_ROW</td><td>光明水务集团</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「光明水务集团」</td></tr><tr><td>VALUE_DIFF</td><td>南山分公司</td><td>平均响应小时数</td><td class="diff-expected">0.8358</td><td class="diff-actual">11.1821</td><td class="diff-delta">10.3463</td><td>「南山分公司」平均响应小时数: 标准 0.8358 / CLI 11.1821</td></tr><tr><td>MISSING_ROW</td><td>宝安水务集团</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「宝安水务集团」</td></tr><tr><td>VALUE_DIFF</td><td>盐田分公司</td><td>平均响应小时数</td><td class="diff-expected">72.8793</td><td class="diff-actual">27.0404</td><td class="diff-delta">-45.8389</td><td>「盐田分公司」平均响应小时数: 标准 72.8793 / CLI 27.0404</td></tr><tr><td>VALUE_DIFF</td><td>福田分公司</td><td>平均响应小时数</td><td class="diff-expected">68.4038</td><td class="diff-actual">321.1788</td><td class="diff-delta">252.775</td><td>「福田分公司」平均响应小时数: 标准 68.4038 / CLI 321.1788</td></tr><tr><td>MISSING_ROW</td><td>龙岗水务集团</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「龙岗水务集团」</td></tr></tbody></table></div>
+
+    <h4>根因</h4>
+    <p class="root">7 月 266 条中 259 条有到场时间，覆盖 4 个单位；标准值要求 6 个单位，其中 光明水务集团、宝安水务集团、龙岗水务集团 在 CLI 里没有记录。行集与库表 dwd_gdgl_gd_jlmx 不一致是主因，平均响应时间本身也受入参口径影响。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">确认 arrive_time 的口径（首次到场 vs 末次到场）及空值处理；如果接口返回多段到场记录，需要明确取哪一条。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>7 月 266 条，有到场时间 259 条</li><li>覆盖组织 4 个，标准值 6 个</li><li>跳过 7 条（期间外或缺时间）</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke leak_detection_and_verification_work --json
+  --param create_time_start=2026-07-01 00:00:00
+  --param create_time_end=2026-07-31 23:59:59</code></pre><p class="cmd-note">本次返回 266 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;组织&quot; AS &quot;组织&quot;, ROUND((_g.hours)::numeric, 4) AS &quot;平均响应小时数&quot;
+FROM (
+SELECT CASE bz_bm WHEN &#x27;坪地分公司&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;莲塘分公司&#x27; THEN &#x27;莲塘供水&#x27;
+     ELSE bz_bm END AS &quot;组织&quot;, AVG(EXTRACT(EPOCH FROM (arrive_time-create_time))/3600.0) AS hours
+FROM dwd_gdgl_gd_jlmx
+WHERE create_time&gt;=CAST(&#x27;2026-07-01&#x27; AS timestamp) AND create_time&lt;CAST(&#x27;2026-08-01&#x27; AS timestamp) AND arrive_time IS NOT NULL
+GROUP BY 1
+ORDER BY 1 ASC
+) _g
+ORDER BY 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="JL-022">
+<details class="case">
+  <summary>
+    <span class="case-id">JL-022</span>
+    <span class="badge fail">数值不符</span>
+    <span class="case-q">上月各单位检漏工单完成率对标情况如何？列出各单位工单总数、完成数和完成率。</span>
+    <span class="case-summary">按组织完成率</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>JL</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>工单总数</th><th>完成数</th><th>完成率</th></tr></thead><tbody><tr><td>南山分公司</td><td>77</td><td>2</td><td>0.026</td></tr><tr><td>盐田分公司</td><td>19</td><td>0</td><td>0</td></tr><tr><td>福田分公司</td><td>97</td><td>37</td><td>0.3814</td></tr><tr><td>罗湖分公司</td><td>73</td><td>0</td><td>0</td></tr></tbody></table></div>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>组织</th><th>工单总数</th><th>完成数</th><th>完成率</th></tr></thead><tbody><tr><td>光明水务集团</td><td>19</td><td>19</td><td>1</td></tr><tr><td>南山分公司</td><td>1</td><td>0</td><td>0</td></tr><tr><td>宝安水务集团</td><td>267</td><td>265</td><td>0.9925</td></tr><tr><td>盐田分公司</td><td>2</td><td>2</td><td>1</td></tr><tr><td>福田分公司</td><td>15</td><td>15</td><td>1</td></tr><tr><td>龙岗水务集团</td><td>166</td><td>166</td><td>1</td></tr></tbody></table></div>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <div class="table-wrap"><table><thead><tr><th>类型</th><th>键</th><th>字段</th><th>标准值</th><th>CLI 值</th><th>差值</th><th>说明</th></tr></thead><tbody><tr><td>MISSING_ROW</td><td>光明水务集团</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「光明水务集团」</td></tr><tr><td>VALUE_DIFF</td><td>南山分公司</td><td>工单总数</td><td class="diff-expected">1</td><td class="diff-actual">77</td><td class="diff-delta">76</td><td>「南山分公司」工单总数: 标准 1.0 / CLI 77.0</td></tr><tr><td>VALUE_DIFF</td><td>南山分公司</td><td>完成数</td><td class="diff-expected">0</td><td class="diff-actual">2</td><td class="diff-delta">2</td><td>「南山分公司」完成数: 标准 0.0 / CLI 2.0</td></tr><tr><td>VALUE_DIFF</td><td>南山分公司</td><td>完成率</td><td class="diff-expected">0</td><td class="diff-actual">0.026</td><td class="diff-delta">0.026</td><td>「南山分公司」完成率: 标准 0.0 / CLI 0.026</td></tr><tr><td>MISSING_ROW</td><td>宝安水务集团</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「宝安水务集团」</td></tr><tr><td>VALUE_DIFF</td><td>盐田分公司</td><td>工单总数</td><td class="diff-expected">2</td><td class="diff-actual">19</td><td class="diff-delta">17</td><td>「盐田分公司」工单总数: 标准 2.0 / CLI 19.0</td></tr><tr><td>VALUE_DIFF</td><td>盐田分公司</td><td>完成数</td><td class="diff-expected">2</td><td class="diff-actual">0</td><td class="diff-delta">-2</td><td>「盐田分公司」完成数: 标准 2.0 / CLI 0.0</td></tr><tr><td>VALUE_DIFF</td><td>盐田分公司</td><td>完成率</td><td class="diff-expected">1</td><td class="diff-actual">0</td><td class="diff-delta">-1</td><td>「盐田分公司」完成率: 标准 1.0 / CLI 0.0</td></tr><tr><td>VALUE_DIFF</td><td>福田分公司</td><td>工单总数</td><td class="diff-expected">15</td><td class="diff-actual">97</td><td class="diff-delta">82</td><td>「福田分公司」工单总数: 标准 15.0 / CLI 97.0</td></tr><tr><td>VALUE_DIFF</td><td>福田分公司</td><td>完成数</td><td class="diff-expected">15</td><td class="diff-actual">37</td><td class="diff-delta">22</td><td>「福田分公司」完成数: 标准 15.0 / CLI 37.0</td></tr><tr><td>VALUE_DIFF</td><td>福田分公司</td><td>完成率</td><td class="diff-expected">1</td><td class="diff-actual">0.3814</td><td class="diff-delta">-0.6186</td><td>「福田分公司」完成率: 标准 1.0 / CLI 0.3814</td></tr><tr><td>MISSING_ROW</td><td>龙岗水务集团</td><td>—</td><td class="diff-expected">—</td><td class="diff-actual">—</td><td class="diff-delta">—</td><td>CLI 未返回「龙岗水务集团」</td></tr></tbody></table></div>
+
+    <h4>根因</h4>
+    <p class="root">7 月 CLI 共 266 条、覆盖 4 个单位；标准值 6 个单位，其中 光明水务集团、宝安水务集团、龙岗水务集团 在 CLI 里没有记录。行集不一致是主因，完成判定（finish_time 非空）口径差异是次要因素。</p>
+
+    <h4>优化建议</h4>
+    <p class="recommend">确认 finish_time 的写入时机（销单 vs 处理完成）；若业务以 step_status_name=已处理完成为准，需要把口径写进题目并同步改标准 SQL。</p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>7 月 266 条，finish_time 非空 39 条</li><li>覆盖组织 4 个，标准值 6 个</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke leak_detection_and_verification_work --json
+  --param create_time_start=2026-07-01 00:00:00
+  --param create_time_end=2026-07-31 23:59:59</code></pre><p class="cmd-note">本次返回 266 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;组织&quot; AS &quot;组织&quot;, CAST(_g.total_cnt AS bigint) AS &quot;工单总数&quot;, CAST(_g.fin_cnt AS bigint) AS &quot;完成数&quot;, ROUND((_g.rate)::numeric, 4) AS &quot;完成率&quot;
+FROM (
+SELECT CASE bz_bm WHEN &#x27;坪地分公司&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;莲塘分公司&#x27; THEN &#x27;莲塘供水&#x27;
+     ELSE bz_bm END AS &quot;组织&quot;, COUNT(*) AS total_cnt,
+       COUNT(*) FILTER (WHERE finish_time IS NOT NULL) AS fin_cnt,
+       COUNT(*) FILTER (WHERE finish_time IS NOT NULL)*1.0/NULLIF(COUNT(*),0) AS rate
+FROM dwd_gdgl_gd_jlmx
+WHERE create_time&gt;=CAST(&#x27;2026-07-01&#x27; AS timestamp) AND create_time&lt;CAST(&#x27;2026-08-01&#x27; AS timestamp)
+GROUP BY 1
+ORDER BY 1 ASC
+) _g
+ORDER BY 1 ASC</code></pre>
+  </div>
+</details>
+</div><div id="BJ-012">
+<details class="case">
+  <summary>
+    <span class="case-id">BJ-012</span>
+    <span class="badge pass">通过</span>
+    <span class="case-q">截至基准日，今年内各单位反复维修超过2次的供水管道有哪些？列出管道编码、单位、地址和维修次数。</span>
+    <span class="case-summary">反复维修&gt;2 次</span>
+  </summary>
+  <div class="case-body">
+    <div class="meta-grid">
+      <div><span class="meta-label">场景</span><span>BJ</span></div>
+      <div><span class="meta-label">结果类型</span><span>detail</span></div>
+      <div><span class="meta-label">标准值来源</span><span>本次标准 SQL 重跑</span></div>
+      <div><span class="meta-label">取数方式</span><span>CLI 实调 · 原始响应已落盘</span></div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="col cli">
+        <h4>CLI 实测</h4>
+        <div class="table-wrap"><table><thead><tr><th>管道编码</th><th>组织</th><th>地址</th><th>维修次数</th></tr></thead><tbody><tr><td>SSFTGS890443</td><td>福田分公司</td><td>中国广东省深圳市福田区南园街道滨河大道1号</td><td>10</td></tr><tr><td>BAXAGS692283</td><td>南山分公司</td><td>中国广东省深圳市南山区沙河街道深安路</td><td>9</td></tr><tr><td>LGGGGS751103</td><td>龙岗水务集团</td><td>中国广东省深圳市龙岗区龙岗街道富民路282号</td><td>7</td></tr><tr><td>SSFTGS1156079</td><td>福田分公司</td><td>中国广东省深圳市福田区福保街道丹桂路124</td><td>7</td></tr><tr><td>SSNSGS278597</td><td>南山分公司</td><td>中国广东省深圳市南山区蛇口街道科苑南路</td><td>7</td></tr><tr><td>BABCGS141766</td><td>福田分公司</td><td>中国广东省深圳市福田区沙头街道沙嘴一街87</td><td>6</td></tr><tr><td>BAGUMGD0000787</td><td>光明水务集团</td><td>中国广东省深圳市光明区光明街道茶林路</td><td>6</td></tr><tr><td>LGGGGS1408795</td><td>龙岗水务集团</td><td>中国广东省深圳市坪山区石井街道金田路149号</td><td>6</td></tr><tr><td>LGGGGS502706</td><td>龙岗水务集团</td><td>中国广东省深圳市坪山区坪山街道振兴街7号</td><td>6</td></tr><tr><td>LGGGGS506904</td><td>龙岗水务集团</td><td>中国广东省深圳市坪山区石井街道金田路54号</td><td>6</td></tr><tr><td>SSFTGS1234120</td><td>福田分公司</td><td>中国广东省深圳市福田区南园街道滨河大道</td><td>6</td></tr><tr><td>SSFTGS898648</td><td>福田分公司</td><td>中国广东省深圳市福田区南园街道滨河大道1号</td><td>6</td></tr><tr><td>SSFTGSY09386</td><td>福田分公司</td><td>中国广东省深圳市福田区南园街道滨河大道</td><td>6</td></tr><tr><td>SSFTGSY46925</td><td>福田分公司</td><td>中国广东省深圳市福田区福保街道石厦四街282号</td><td>6</td></tr><tr><td>SSNSGS897470</td><td>南山分公司</td><td>中国广东省深圳市南山区南山街道月亮湾大道</td><td>6</td></tr><tr><td>BABCGS141766</td><td>南山分公司</td><td>中国广东省深圳市南山区粤海街道高新中三道11</td><td>5</td></tr><tr><td>BAGLGD1257785</td><td>龙华水务集团</td><td>中国广东省深圳市龙华区观澜街道锦布路</td><td>5</td></tr><tr><td>BASGGS018214</td><td>宝安水务集团</td><td>中国广东省深圳市宝安区松岗街道沙浦二路105号</td><td>5</td></tr><tr><td>BASGGS316130</td><td>宝安水务集团</td><td>中国广东省深圳市宝安区松岗街道江边工业六路5</td><td>5</td></tr><tr><td>LGGGGS1263832</td><td>龙岗水务集团</td><td>中国广东省深圳市龙岗区龙岗街道鹏达路29-5</td><td>5</td></tr></tbody></table></div><p class="more">仅展示前 20 行，共 166 行</p>
+      </div>
+      <div class="col std">
+        <h4>标准值（本次 SQL 重跑）</h4>
+        <div class="table-wrap"><table><thead><tr><th>管道编码</th><th>维修次数</th><th>组织</th><th>地址</th></tr></thead><tbody><tr><td>SSFTGS890443</td><td>10</td><td>福田分公司</td><td>中国广东省深圳市罗湖区桂园街道滨河大道辅道</td></tr><tr><td>BAXAGS692283</td><td>9</td><td>南山分公司</td><td>广东省深圳市南山区沙河街道沙河街58号</td></tr><tr><td>LGGGGS751103</td><td>7</td><td>龙岗水务集团</td><td>广东省深圳市龙岗区龙岗街道富民路282号</td></tr><tr><td>SSFTGS1156079</td><td>7</td><td>福田分公司</td><td>中国广东省深圳市福田区福田街道福民路89</td></tr><tr><td>SSNSGS278597</td><td>7</td><td>南山分公司</td><td>中国广东省深圳市宝安区新桥街道上星商业街41</td></tr><tr><td>BAGUMGD0000787</td><td>6</td><td>光明水务集团</td><td>中国广东省深圳市光明区光明街道茶林路</td></tr><tr><td>LGGGGS1408795</td><td>6</td><td>龙岗水务集团</td><td>中国广东省深圳市坪山区石井街道金田路149号</td></tr><tr><td>SSFTGS898648</td><td>6</td><td>福田分公司</td><td>中国广东省深圳市福田区福保街道石厦四街224-1号</td></tr><tr><td>SSFTGSY09386</td><td>6</td><td>福田分公司</td><td>中国广东省深圳市福田区梅林街道梅华路238-118</td></tr><tr><td>SSFTGSY46925</td><td>6</td><td>福田分公司</td><td>中国广东省深圳市福田区福保街道石厦四街282号</td></tr><tr><td>BABCGS141766</td><td>6</td><td>福田分公司</td><td>中国广东省深圳市福田区香蜜湖街道竹子林七路14</td></tr><tr><td>SSNSGS897470</td><td>6</td><td>南山分公司</td><td>中国广东省深圳市南山区南山街道月亮湾大道</td></tr><tr><td>SSFTGS1234120</td><td>6</td><td>福田分公司</td><td>广东省深圳市罗湖区桂园街道红岭南路</td></tr><tr><td>LGGGGS506904</td><td>6</td><td>龙岗水务集团</td><td>中国广东省深圳市坪山区石井街道金田路67号</td></tr><tr><td>LGGGGS502706</td><td>6</td><td>龙岗水务集团</td><td>中国广东省深圳市坪山区坪山街道振兴路123号</td></tr><tr><td>SSPDGS1002170</td><td>5</td><td>坪地供水</td><td>中国广东省深圳市龙岗区坪地街道深惠公路68</td></tr><tr><td>BASGGS316130</td><td>5</td><td>宝安水务集团</td><td>中国广东省深圳市宝安区松岗街道江边工业六路5</td></tr><tr><td>LGGGGS663648</td><td>5</td><td>龙岗水务集团</td><td>中国广东省深圳市龙岗区园山街道围湖东路22号</td></tr><tr><td>SSYTGS01288631</td><td>5</td><td>盐田分公司</td><td>中国广东省深圳市盐田区海山街道马庙街7号</td></tr><tr><td>SSFTGSY16251</td><td>5</td><td>福田分公司</td><td>中国广东省深圳市福田区香蜜湖街道香蜜湖路辅路</td></tr></tbody></table></div><p class="more">仅展示前 20 行，共 166 行</p>
+      </div>
+    </div>
+
+    <h4>差异明细（CLI vs 标准值）</h4>
+    <p class="ok">无差异</p>
+
+    <h4>根因</h4>
+    <p class="root"></p>
+
+    <h4>优化建议</h4>
+    <p class="recommend"></p>
+
+    <h4>证据</h4>
+    <ul class="evidence"><li>取回 24991 条工单（2026-01-01 ~ 2026-08-17）</li><li>维修次数&gt;2 的分组 166 组，标准值 166 组</li><li>标准值最高维修次数 10</li></ul>
+
+    <h4>实际传参</h4>
+    <pre class="cmd"><code>python -m leakage_agent_cli invoke water_supply_pipe_maintenance_work --json
+  --param create_time_start=2026-01-01 00:00:00
+  --param create_time_end=2026-08-18 00:00:00</code></pre><p class="cmd-note">本次返回 24991 行</p><p class="cmd-note">分页由客户端追加：指标 pageNo 从 0 起、pageSize=100；明细 pageNumber 从 1 起、pageSize=50。</p>
+
+    <h4>实际执行的标准 SQL</h4>
+    <pre class="sql"><code>SELECT _g.&quot;管道编码&quot; AS &quot;管道编码&quot;, _g.&quot;组织&quot; AS &quot;组织&quot;, _g.&quot;地址&quot; AS &quot;地址&quot;, CAST(_g.cnt AS bigint) AS &quot;维修次数&quot;
+FROM (
+SELECT pipe_number AS &quot;管道编码&quot;, CASE bz_bm WHEN &#x27;坪地分公司&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;莲塘分公司&#x27; THEN &#x27;莲塘供水&#x27;
+     ELSE bz_bm END AS &quot;组织&quot;, MAX(detailedaddress) AS &quot;地址&quot;, COUNT(*) AS cnt
+FROM dwd_gdgl_gd_gsgdwxmx
+WHERE create_time&gt;=CAST(&#x27;2026-01-01&#x27; AS timestamp) AND create_time&lt;CAST(&#x27;2026-08-18&#x27; AS timestamp) AND pipe_number IS NOT NULL AND pipe_number&lt;&gt;&#x27;&#x27;
+GROUP BY pipe_number, CASE bz_bm WHEN &#x27;坪地分公司&#x27; THEN &#x27;坪地供水&#x27; WHEN &#x27;莲塘分公司&#x27; THEN &#x27;莲塘供水&#x27;
+     ELSE bz_bm END
+HAVING COUNT(*) &gt; 2
+ORDER BY cnt DESC, pipe_number ASC
+) _g
+ORDER BY &quot;维修次数&quot; DESC</code></pre>
+  </div>
+</details>
+</div>
+  </section>
+
+  <footer>
+    数据源：leakage-agent-cli（BIZ_GATEWAY_URL=https://assistant.sz-water.com.cn）。
+    标准值：用 data/golden/golden_dataset.json 的 business_verified 题目所附标准 SQL，
+    在当前库只读重跑得到的结果；字段与容差沿用题目契约。
+    原始 CLI 响应已落盘到 cli_eval/out/raw/（跨版本共用），本版本结构化结果见 cli_eval/out/report_20261027/results.json。
+    首轮全量取数约 5 分钟（含 227 页预警、114 页 DMA）；本报告重跑命中本地缓存，数值不变。
+    报告只做取数与比对，不修改业务库、不调用写入命令。
+  </footer>
+</div>
+<script>
+  function openHash() {
+    if (!location.hash) return;
+    const target = document.querySelector(location.hash);
+    if (!target) return;
+    const details = target.querySelector('details');
+    if (details) details.open = true;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  window.addEventListener('hashchange', openHash);
+  window.addEventListener('load', openHash);
+</script>
+</body>
+</html>

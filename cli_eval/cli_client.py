@@ -12,11 +12,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from cli_eval.outdir import OUT as OUT_DIR
+
 CLI_DIR = Path(
     r"D:\WorkingSet\PythonProjects\深水工作\water-loss-agent\zs-water-loss-agent\tools\leakage-agent-cli"
 )
-OUT_DIR = Path(__file__).resolve().parent / "out"
-RAW_DIR = OUT_DIR / "raw"
+RAW_DIR = OUT_DIR / "raw"  # 接口响应缓存，跨版本共用
 
 METRIC = "metric"      # data.data.list, pageNo 从 0 起
 DETAIL = "detail"      # data.data.result, pageNumber 从 1 起

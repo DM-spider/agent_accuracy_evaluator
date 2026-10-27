@@ -165,7 +165,8 @@ def values_close(expected: Optional[float], actual: Optional[float], spec: Optio
         if abs(expected) <= 1e-12:
             ok = abs(delta) <= max(floor, 1e-6)
         else:
-            ok = abs(delta) / abs(expected) <= eps or abs(delta) <= floor
+            # 加 1e-12 吸收浮点误差：1.27 与 1.26 的差是 0.010000000000000009
+            ok = abs(delta) / abs(expected) <= eps + 1e-12 or abs(delta) <= floor
         return ok, delta, "rel"
-    ok = abs(delta) <= eps
+    ok = abs(delta) <= eps + 1e-9
     return ok, delta, "abs"

@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
-"""把 results.json 渲染成一份自包含 HTML 报告。"""
+"""把某天版本目录里的 results.json 渲染成一份自包含 HTML 报告。"""
 from __future__ import annotations
 
+import argparse
 import html
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
-OUT = Path(__file__).resolve().parent / "out"
-RESULTS = OUT / "results.json"
-REPORT = OUT / "cli_eval_report.html"
+from cli_eval.outdir import list_versions, latest_version, use_date, version_dir
 
 STATUS = {
     "PASS": ("通过", "pass"),
@@ -33,11 +32,11 @@ SUMMARY = {
     "BJ-017": ("56 组（管径×单位）", "27 行（含三级部门）"),
     "DMA-002": ("5675 条 / 12 个组织", "5675 条 / 12 个组织"),
     "DMA-026": ("率 15 个单位；漏损/小区数缺", "15 个组织 × 3 列"),
-    "JL-016": ("E101 阻塞", "13 行"),
-    "JL-019": ("E101 阻塞", "10 行"),
-    "JL-021": ("E101 阻塞", "6 行"),
-    "JL-022": ("E101 阻塞", "6 行"),
-    "BJ-012": ("E101 阻塞", "166 行"),
+    "JL-016": ("工单可调取；漏损量字段缺", "13 行"),
+    "JL-019": ("7 月最新 10 条", "10 行"),
+    "JL-021": ("按组织平均响应", "6 行"),
+    "JL-022": ("按组织完成率", "6 行"),
+    "BJ-012": ("反复维修>2 次", "166 行"),
 }
 
 
@@ -265,10 +264,17 @@ def render_case(case: Dict[str, Any]) -> str:
 CONTRACT_FINDINGS = [
     {
         "owner": "网关 / 平台",
-        "issue": "commandCode 超过 32 字符，invoke 直接失败",
-        "evidence": "water_supply_pipe_maintenance_work（34 字符）、leak_detection_and_verification_work（36 字符）返回 E101「commandCode长度不能超过32」；31/29 字符的命令可正常调用。",
-        "impact": "阻塞 JL-016、JL-019、JL-021、JL-022、BJ-012；BJ-017 的三级部门下钻也依赖该明细表。",
-        "action": "把两个命令改名为 ≤32 字符（如 wsp_maintenance_work / jl_work_detail），或提供短别名映射；改完后补一次回归。",
+        "issue": "长命令码限制已解除，原先 5 题「阻塞」已恢复可测",
+        "evidence": "2026-10-27 实测 water_supply_pipe_maintenance_work（34 字符）、leak_detection_and_verification_work（36 字符）均返回 SUCCESS（250,877 / 266 行），10/21 的 E101 不再出现；JL-016、BJ-017 改走实跑后与标准值完全一致。",
+        "impact": "10/21 报告里「5 题被网关阻塞」的结论已失效，实际都可对账。",
+        "action": "脚本已改为实跑；后续遇到 invoke 失败以 respCode 为准，不要再预设长度限制。",
+    },
+    {
+        "owner": "字段补齐",
+        "issue": "维修工单明细分页返回的字段集不一致",
+        "evidence": "water_supply_pipe_maintenance_work 7 月 180 页里，17 页所有行都带 water_leakage、114 页完全不返回该键、49 页部分行有；caliber 也时有时无（3405 条里 881 条为空）。",
+        "impact": "客户端不能假设字段固定存在，聚合时必须把缺字段当空值，否则会漏算或直接 KeyError。",
+        "action": "统一返回字段：缺值返回 null 而不是省略键；或在文档里写清哪些字段按数据源条件返回。",
     },
     {
         "owner": "网关 / 平台",
@@ -287,9 +293,16 @@ CONTRACT_FINDINGS = [
     {
         "owner": "网关 / 平台",
         "issue": "业务失败仍返回 HTTP 200，CLI 退出码为 0",
-        "evidence": "respCode=1002 / E101 时，CLI 仍正常打印 JSON 且 exitCode=0；invoke 不校验 respCode，只有 authority 校验。",
+        "evidence": "respCode=1002 时，CLI 仍正常打印 JSON 且 exitCode=0；invoke 不校验 respCode，只有 authority 校验。",
         "impact": "批处理会把失败当成功，报告出现假通过。",
         "action": "CLI 在 invoke 里校验 respCode，非 SUCCESS 返回非 0；或至少在 stdout 里固定加 success 字段。",
+    },
+    {
+        "owner": "题目口径",
+        "issue": "DMA-002 的标准 SQL 未按「居民小区」过滤",
+        "evidence": "CLI status=WORK 全量 5,679 条；加 dmatype=RESIDENT 后 2,110 条。题目问的是「居民小区 DMA」，标准 SQL 只按 status='WORK'。",
+        "impact": "按当前标准值 DMA-002 判通过（5,679 = 5,679），但口径与题面不符；智能体答 2,110 反而更贴合题目。",
+        "action": "确认题目要的是居民小区 DMA 还是全部 DMA；若为前者，标准 SQL 需加 dmatype='RESIDENT' 并重算这道题。",
     },
     {
         "owner": "指标口径",
@@ -328,17 +341,17 @@ CONTRACT_FINDINGS = [
     },
     {
         "owner": "字段补齐",
-        "issue": "检漏明细缺到场时间 / 完成判定字段",
-        "evidence": "JL-021 需要 arrive_time，JL-022 需要 finish_time 或 step_status_name，JL-019 需要按 create_time 倒序取前 10；当前命令被 E101 阻塞，字段是否返回也未知。",
-        "impact": "即使命令改短，这三题仍可能因为字段缺失或排序能力不足而不可测。",
-        "action": "改短命令码的同时，确认 arrive_time、finish_time、create_time 返回，并提供 sort 参数或明确默认排序。",
+        "issue": "检漏明细的完成判定口径需明确",
+        "evidence": "命令已恢复可调用，create_time / arrive_time / finish_time / step_status_name 均已返回，JL-019/021/022 已能对账；但 finish_time（销单）与 step_status_name（已处理完成）不是同一时点，完成率会有差异。",
+        "impact": "完成数/完成率能否达标取决于用哪个字段判定「完成」。",
+        "action": "在接口文档里写明 finish_time 的写入时机；若业务以「已处理完成」为准，需要同步修改标准 SQL 口径。",
     },
     {
         "owner": "字段补齐",
-        "issue": "爆管聚合命令没有三级部门维度",
-        "evidence": "4 个 *_pipe_diameter_burst 只返回 dimensionValue=单位；标准值 BJ-017 的 key 含三级部门。4 个命令 7 月按单位汇总后仍有 25 组与标准值不一致。",
-        "impact": "BJ-017 只能验收单位级总量，无法验收「下钻到三级部门」。",
-        "action": "给聚合命令加 dimensionType=2（三级部门）或 l3_name；或开放 water_supply_pipe_maintenance_work 的 caliber + l3_name 明细。",
+        "issue": "爆管聚合命令没有三级部门维度（已用明细命令绕开）",
+        "evidence": "4 个 *_pipe_diameter_burst 只返回 dimensionValue=单位，无 l3_name；改用 water_supply_pipe_maintenance_work 明细（含 caliber + level3_name）后，BJ-017 的 27 组「管径×单位×三级部门」已完全对上。",
+        "impact": "聚合命令仍不能下钻三级部门，但明细命令可以替代，不影响验收。",
+        "action": "如需继续用聚合命令，请补 dimensionType=2（三级部门）；否则在映射表里标注 BJ-017 走明细命令。",
     },
     {
         "owner": "字段补齐",
@@ -353,6 +366,13 @@ CONTRACT_FINDINGS = [
         "evidence": "7 月 NightFlow：CLI 558 条 / 库 549 条，CLI TOP10 少 1 条计数、缺 2 个 DMA；7 月全部预警：CLI 11,308 条 / 库 11,558 条，差 250。",
         "impact": "BJ-003、BJ-016 的数值不可直接采信。",
         "action": "核对 leakage_warning_information 的底层表、日期边界和去重规则，与 dwd_lsxt_bj 对齐。",
+    },
+    {
+        "owner": "数据质量",
+        "issue": "检漏工单明细与 dwd_gdgl_gd_jlmx 行集不一致",
+        "evidence": "7 月：CLI 266 条（福田 97 / 南山 77 / 罗湖 73 / 盐田 19），库表 470 条（含宝安 267、龙岗 166、光明 19，且南山仅 1 条）；组织和行数都对不上。不带日期时 CLI 返回 16,822 条，说明日期过滤本身有效。",
+        "impact": "JL-019、JL-021、JL-022、JL-036 的工单数和完成率无法与标准值对齐，差异不是脚本问题。",
+        "action": "核对 leak_detection_and_verification_work 的底层表与 dwd_gdgl_gd_jlmx 是否为同一业务口径（是否含历史归档、是否按 bz_bm 归口）。",
     },
     {
         "owner": "数据质量",
@@ -391,7 +411,23 @@ def render_contract_findings() -> str:
 
 
 def main() -> None:
-    payload = json.loads(RESULTS.read_text(encoding="utf-8"))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", help="要出报告的版本日期 YYYYMMDD（如 20261027），默认最新版本")
+    parser.add_argument("--list", action="store_true", help="列出已有版本后退出")
+    args = parser.parse_args()
+    if args.list:
+        versions = list_versions()
+        print("\n".join(versions) if versions else "还没有任何版本")
+        return
+    version = use_date(args.date or latest_version())
+    if not version or not (version_dir() / "results.json").exists():
+        print(f"版本 {version or '(无)'} 没有 results.json，先跑 python -m cli_eval.run")
+        return
+    results_path = version_dir() / "results.json"
+    # 文件名带日期，转发出去不用再解释是哪一版
+    report_path = version_dir() / f"cli_eval_report_{version}.html"
+    payload = json.loads(results_path.read_text(encoding="utf-8"))
+    payload["version"] = version
     results: List[Dict[str, Any]] = payload["results"]
     counts: Dict[str, int] = {}
     for r in results:
@@ -437,9 +473,13 @@ def main() -> None:
         f"<strong>{counts.get('VALUE_DIFF', 0)} 题数值不符</strong>（{ids('VALUE_DIFF')}），"
         f"<strong>{counts.get('CALIBER_DIFF', 0)} 题口径不符</strong>（{ids('CALIBER_DIFF')}），"
         f"<strong>{counts.get('PARTIAL', 0)} 题部分可测</strong>（{ids('PARTIAL')}），"
-        f"<strong>{counts.get('BLOCKED', 0)} 题被网关 32 字符限制阻塞</strong>（{ids('BLOCKED')}）。"
-        "可比对的题里，累计类指标（year_cum_diff_rate）质量最好；"
-        "问题集中在月度量口径、预警明细行集和长命令码。"
+        + (
+            f"<strong>{counts.get('BLOCKED', 0)} 题被网关阻塞</strong>（{ids('BLOCKED')}）。"
+            if counts.get("BLOCKED", 0)
+            else "本轮没有被网关阻塞的题。"
+        )
+        + "可比对的题里，累计类指标（year_cum_diff_rate）质量最好；"
+        "问题集中在月度量口径、预警明细行集和缺失字段。"
     )
 
     html_doc = f"""<!doctype html>
@@ -566,6 +606,7 @@ def main() -> None:
     <div class="sub">
       <span>对象：leakage-agent-cli（authority + invoke）</span>
       <span>范围：16 道业务核对题</span>
+      <span>版本：{esc(payload.get('version'))}</span>
       <span>生成时间：{esc(payload.get('generated_at'))}</span>
     </div>
   </header>
@@ -604,7 +645,7 @@ def main() -> None:
     数据源：leakage-agent-cli（BIZ_GATEWAY_URL=https://assistant.sz-water.com.cn）。
     标准值：用 data/golden/golden_dataset.json 的 business_verified 题目所附标准 SQL，
     在当前库只读重跑得到的结果；字段与容差沿用题目契约。
-    原始 CLI 响应已落盘到 cli_eval/out/raw/，结构化结果见 cli_eval/out/results.json。
+    原始 CLI 响应已落盘到 cli_eval/out/raw/（跨版本共用），本版本结构化结果见 cli_eval/out/report_{version}/results.json。
     首轮全量取数约 5 分钟（含 227 页预警、114 页 DMA）；本报告重跑命中本地缓存，数值不变。
     报告只做取数与比对，不修改业务库、不调用写入命令。
   </footer>
@@ -624,8 +665,8 @@ def main() -> None:
 </body>
 </html>
 """
-    REPORT.write_text(html_doc, encoding="utf-8")
-    print(f"written {REPORT}")
+    report_path.write_text(html_doc, encoding="utf-8")
+    print(f"written {report_path}")
 
 
 if __name__ == "__main__":

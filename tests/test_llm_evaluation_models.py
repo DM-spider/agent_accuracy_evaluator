@@ -68,10 +68,18 @@ def test_unknown_verdict_status_and_issue_code_are_rejected():
         EvaluationDifference(type="NOT_A_CODE")
 
 
-def test_partial_requires_missing_support():
+def test_partial_accepts_wrong_values():
+    # 部分作答本来就是有对有错：错值可以支撑 PARTIAL，不再只认漏行/漏字段
     dims = dimensions(field_coverage="PARTIAL")
     result = make_result(verdict="PARTIAL", codes=("WRONG_VALUE",), dims=dims)
+    assert validate_decision(result) == []
+
+
+def test_partial_without_any_support_is_downgraded():
+    result = make_result(verdict="PARTIAL", dims=dimensions())
     assert any("PARTIAL" in note for note in validate_decision(result))
+    corrected, _notes = enforce_decision(result)
+    assert corrected.overall_verdict.value == "UNEVALUABLE"
 
 
 def test_partial_with_missing_row_is_consistent():

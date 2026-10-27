@@ -10,6 +10,9 @@ from html import escape
 from pathlib import Path
 
 from evaluator.evaluation_metrics import run_evaluation_metrics
+from evaluator.models import CaseContract
+from evaluator.normalizer import parse_number
+from evaluator.reconcile import align_rows
 from evaluator.verdict import ISSUE_LABELS
 
 DIMENSIONS = {
@@ -59,6 +62,15 @@ def rate(value):
     return "暂无可评估样本" if parsed is None else f"{parsed * 100:.1f}%"
 
 
+def num4(raw):
+    """数值最多保留 4 位小数（去掉末尾的 0），非数值保持原样。"""
+    parsed = number(raw)
+    if parsed is None:
+        return h(raw)
+    text = f"{parsed:,.4f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
 def local_time(value):
     if not value:
         return "未记录"
@@ -72,7 +84,11 @@ def local_time(value):
 
 
 def tag(status, label=None):
-    css = {"QUALIFIED": "pass", "MATCH": "pass", "UNQUALIFIED": "fail", "MISMATCH": "fail", "ERROR": "fail", "PARTIAL": "review"}.get(status, "neutral")
+    css = {
+        "QUALIFIED": "pass", "MATCH": "pass",
+        "UNQUALIFIED": "fail", "MISMATCH": "fail", "ERROR": "fail",
+        "PARTIAL": "partial", "UNEVALUABLE": "review",
+    }.get(status, "neutral")
     return f'<span class="tag {css}">{h(label or VERDICTS.get(status) or STATUSES.get(status) or status)}</span>'
 
 
@@ -145,6 +161,80 @@ def duration(ms):
     return "未记录" if parsed is None else f"{parsed / 1000:.2f} 秒"
 
 
+def comparison_html(contract, answer_text, snapshot):
+    """左栏放智能体完整回答，右栏放标准答案；基准表上标出回答对不上的格子和漏掉的行。"""
+    rows = (snapshot or {}).get("rows") or []
+    parsed = None
+    if contract:
+        try:
+            parsed = CaseContract.model_validate(contract)
+        except Exception:
+            parsed = None
+    aligned = align_rows(parsed, answer_text or "", rows, (snapshot or {}).get("params") or {}) if parsed else {}
+    left = answer_html(answer_text)
+    if not aligned.get("available"):
+        return (
+            '<div class="compare-grid">'
+            f'<div class="col"><h4>智能体回答</h4><div class="pane-body">{left}</div></div>'
+            f'<div class="col"><h4>标准答案（SQL 基准）</h4><div class="pane-body">{sql_evidence(snapshot)}</div></div>'
+            '</div>'
+        )
+
+    columns = aligned.get("display_columns") or aligned.get("columns") or []
+    labels = {
+        key: ((parsed.measures[key].label or key) if key in parsed.measures else key)
+        for key in columns
+    }
+    units = {key: (parsed.measures[key].unit if key in parsed.measures else "") for key in columns}
+    key_label = " / ".join(aligned.get("row_key") or []) or "行"
+
+    head = [f'<th>{h(key_label)}</th>']
+    for key in columns:
+        unit = units.get(key) or ""
+        label = labels.get(key, key)
+        head.append(f'<th class="num">{h(f"{label}（{unit}）" if unit and unit not in label else label)}</th>')
+
+    body = []
+    for row in aligned.get("rows") or []:
+        if row.get("status") == "extra":
+            continue  # 回答多出来的行不在基准里，这里不展示
+        cells = []
+        for key in columns:
+            raw = row["sql"].get(key)
+            spec = parsed.measures.get(key)
+            # 基准原始值可能是 0–1 比值，按契约统一到业务单位后再展示
+            norm = parse_number(raw, spec, "sql")[0] if (spec and raw not in (None, "")) else None
+            if isinstance(norm, (int, float)):
+                text = num4(norm)
+            elif norm not in (None, ""):
+                text = h(norm)
+            elif raw not in (None, ""):
+                text = h(raw)
+            else:
+                text = "—"
+            state = row["cells"].get(key, "na")
+            css = "num cell-miss" if state == "miss" else "num cell-empty" if state == "empty" else "num"
+            cells.append(f'<td class="{css}">{text}</td>')
+        css_row = ' class="row-absent"' if row.get("status") == "missing" else ""
+        body.append(f'<tr{css_row}><td class="row-key">{h(row["key"])}</td>{"".join(cells)}</tr>')
+    right = f'<table><thead><tr>{"".join(head)}</tr></thead><tbody>{"".join(body)}</tbody></table>'
+
+    extra = len(aligned.get("extra_rows") or [])
+    legend = (
+        '<p class="note compare-legend">右表为标准答案：'
+        '<span class="cell-miss legend-chip">红底</span> 表示智能体回答与基准不符，'
+        '<span class="row-absent legend-chip">灰行</span> 表示回答没有给出这一行。'
+        + (f"回答另有 {extra} 行不在基准中。" if extra else "")
+        + '</p>'
+    )
+    return (
+        '<div class="compare-grid">'
+        f'<div class="col"><h4>智能体回答</h4><div class="pane-body">{left}</div></div>'
+        f'<div class="col"><h4>标准答案（SQL 基准）</h4><div class="pane-body">{right}</div></div>'
+        '</div>' + legend
+    )
+
+
 def dimensions_html(dimensions):
     cards = []
     for key, label in DIMENSIONS.items():
@@ -170,12 +260,13 @@ def differences_html(differences, measures):
         measure = measures.get(field) or next((m for m in measures.values() if field == m.get("label") or field in (m.get("aliases") or [])), {})
         unit = f'<div class="unit-note">单位：{h(measure["unit"])}</div>' if measure.get("unit") else ""
         detail = h(diff.get("explanation") or "未记录说明")
-        if diff.get("evidence"):
-            detail += disclosure("查看核验证据", f'<p class="preserve">{h(diff["evidence"])}</p>')
         code = diff.get("type") or "未分类问题"
-        issue = tag(diff.get("severity"), ISSUE_LABELS.get(code, code))
-        issue += '<div class="unit-note">' + ("错误" if diff.get("severity") == "ERROR" else "需复核") + "</div>"
-        rows.append([issue, h(diff.get("coordinate") or "未指定位置"), h(field) + unit, value(diff.get("agent_value")), value(diff.get("sql_value")), ("+" if delta is not None and delta > 0 else "") + value(delta), "—" if ratio is None else f"{ratio * 100:+.1f}%", detail])
+        severity = "错误" if diff.get("severity") == "ERROR" else "需复核"
+        issue = (
+            f'<span class="issue-cell">{tag(diff.get("severity"), ISSUE_LABELS.get(code, code))}'
+            f'<span class="issue-severity">{severity}</span></span>'
+        )
+        rows.append([issue, h(diff.get("coordinate") or "未指定位置"), h(field) + unit, num4(diff.get("agent_value")), num4(diff.get("sql_value")), ("+" if delta is not None and delta > 0 else "") + num4(delta), "—" if ratio is None else f"{ratio * 100:+.1f}%", detail])
     return table(["问题类型", "数据位置", "指标 / 字段", "回答值", "基准值", "标准化差值", "差异率", "说明 / 证据"], rows, "diff-table", (3, 4, 5, 6))
 
 
@@ -201,8 +292,6 @@ def case_html(case, index, contract):
     if data.get("needs_human_review"):
         warnings.append('<div class="notice">评估模型提示需要人工复核。</div>')
     confidence = rate(judgment.get("confidence")) if judgment.get("confidence") is not None else "未记录"
-    answer = disclosure("查看完整智能体回答", answer_html((detail.get("agent_answer") or {}).get("text")))
-    baseline = disclosure("查看原评分 SQL 基准结果", sql_evidence(sql))
     timings = result.get("agent_timings") or item.get("agent_timings") or {}
     technical = f'<dl class="case-facts"><div><dt>智能体完整响应</dt><dd>{duration(timings.get("completed_ms", result.get("agent_latency_ms")))}</dd></div><div><dt>SQL 查询</dt><dd>{duration(sql.get("latency_ms"))}</dd></div><div><dt>模型评估</dt><dd>{duration(artifact.get("latency_ms"))}</dd></div><div><dt>评估模型</dt><dd>{h(artifact.get("model"))}</dd></div><div><dt>提示词版本</dt><dd>{h(artifact.get("prompt_version"))}</dd></div><div><dt>评估时间（北京时间）</dt><dd>{h(local_time(artifact.get("created_at")))}</dd></div></dl><p class="note">各阶段耗时独立记录，不能简单相加作为端到端耗时。</p><h3>基准 SQL 与筛选参数</h3><pre>{h(sql.get("executed_sql") or sql.get("sql_template") or "未记录 SQL")}</pre><p class="preserve">{h(sql.get("params") or "未记录参数")}</p>'
     if artifact.get("error"):
@@ -210,27 +299,77 @@ def case_html(case, index, contract):
     if artifact.get("validation_notes"):
         technical += f'<p class="preserve">数值复核说明：{h(artifact["validation_notes"])}</p>'
     rechecks = "".join(disclosure(f'事后 SQL 补查 · {local_time(snapshot.get("finished_at"))}', f'<p class="note">仅供复核，不覆盖原评分基准。用途：{h(snapshot.get("note") or "未记录")}</p>' + sql_evidence(snapshot)) for snapshot in detail.get("sql_rechecks") or [])
-    return f'<article class="case-section" id="case-{index}" data-case-detail><div class="case-heading"><h3>{h(item["case_id"])} · {h(result.get("scene_big") or contract.get("scene_big") or "题目详情")}</h3>{tag(final)}</div><p class="question">{h(question)}</p>{"".join(warnings)}<p class="preserve">{h(judgment.get("summary") or "未记录评估摘要")}</p><p class="note">模型判断置信度：{confidence}；置信度不代表回答合格率。</p>{dimensions_html(judgment.get("dimensions") or {})}<h3 style="margin-top:24px">已记录的 {len(differences)} 条差异</h3>{differences_html(differences, contract.get("measures") or {})}<p class="note">差值与差异率仅对完成标准化的数值错误计算。基准为零时不计算差异率，未标准化时显示“—”。明细数量仅统计已保存的差异记录，不按评估摘要推算异常数量。</p>{answer}{baseline}{rechecks}{disclosure("技术附录：取数条件与执行记录", technical)}</article>'
+    reason = judgment.get("reason_label") or ("尚无评估" if not judgment.get("has_evaluation") else "")
+    summary_line = (
+        f'<summary><span class="case-id">{h(item["case_id"])}</span>'
+        f'<span class="case-q">{h(question)}</span>'
+        f'{tag(final)}'
+        f'<span class="case-reason">{h(reason)}</span></summary>'
+    )
+    body = (
+        '<div class="case-body">'
+        + "".join(warnings)
+        + f'<p class="question">{h(question)}</p>'
+        + f'<p class="preserve">{h(judgment.get("summary") or "未记录评估摘要")}</p>'
+        + f'<p class="note">模型判断置信度：{confidence}；置信度不代表回答合格率。</p>'
+        + '<h3>回答 vs 标准值</h3>'
+        + comparison_html(contract, (detail.get("agent_answer") or {}).get("text"), sql)
+        + '<h3>七维核验</h3>'
+        + dimensions_html(judgment.get("dimensions") or {})
+        + f'<h3>已记录的 {len(differences)} 条差异</h3>'
+        + differences_html(differences, contract.get("measures") or {})
+        + '<p class="note">差值与差异率仅对完成标准化的数值错误计算。基准为零时不计算差异率，未标准化时显示“—”。明细数量仅统计已保存的差异记录，不按评估摘要推算异常数量。</p>'
+        + rechecks
+        + disclosure("技术附录：取数条件与执行记录", technical)
+        + '</div>'
+    )
+    return f'<details class="case" id="case-{index}" data-verdict="{h(final)}" data-case-detail>{summary_line}{body}</details>'
 
 
 REPORT_SCRIPT = r"""
 const evidence = [...document.querySelectorAll('details')];
+// 点目录/题号跳转时，目标题目自动展开，不用再点一次
+function openHash() {
+  if (!location.hash) return;
+  const target = document.querySelector(location.hash);
+  if (!target) return;
+  const details = target.matches('details') ? target : target.querySelector('details');
+  if (details) details.open = true;
+}
+window.addEventListener('load', openHash);
+window.addEventListener('hashchange', openHash);
 document.getElementById('expand').onclick = () => evidence.forEach(item => { item.open = true; });
 document.getElementById('collapse').onclick = () => evidence.forEach(item => { item.open = false; });
 document.getElementById('print').onclick = () => window.print();
 const rows = [...document.querySelectorAll('[data-case-row]')];
+const cards = [...document.querySelectorAll('[data-case-detail]')];
 const search = document.getElementById('search');
 const status = document.getElementById('status');
+function matches(el) {
+  const keyword = search.value.trim().toLowerCase();
+  return !((status.value && el.dataset.verdict !== status.value) || (keyword && !el.textContent.toLowerCase().includes(keyword)));
+}
 function filter() {
-  rows.forEach(row => { row.hidden = (status.value && row.dataset.verdict !== status.value) || !row.textContent.toLowerCase().includes(search.value.trim().toLowerCase()); });
+  rows.forEach(row => { row.hidden = !matches(row); });
+  cards.forEach(card => { card.hidden = !matches(card); });
   document.getElementById('visible-count').textContent = `显示 ${rows.filter(row => !row.hidden).length} / ${rows.length} 题`;
   document.getElementById('filter-empty').hidden = rows.some(row => !row.hidden);
 }
 search.oninput = filter; status.onchange = filter;
 document.getElementById('reset').onclick = () => { search.value = ''; status.value = ''; filter(); };
 let printState = null;
-window.addEventListener('beforeprint', () => { if (printState === null) printState = {open: evidence.map(item => item.open), hidden: rows.map(row => row.hidden)}; evidence.forEach(item => { item.open = true; }); rows.forEach(row => { row.hidden = false; }); });
-window.addEventListener('afterprint', () => { if (printState) { evidence.forEach((item, i) => { item.open = printState.open[i]; }); rows.forEach((row, i) => { row.hidden = printState.hidden[i]; }); } printState = null; });
+window.addEventListener('beforeprint', () => {
+  if (printState === null) printState = {open: evidence.map(item => item.open), hidden: [...rows, ...cards].map(item => item.hidden)};
+  evidence.forEach(item => { item.open = true; });
+  [...rows, ...cards].forEach(item => { item.hidden = false; });
+});
+window.addEventListener('afterprint', () => {
+  if (printState) {
+    evidence.forEach((item, i) => { item.open = printState.open[i]; });
+    [...rows, ...cards].forEach((item, i) => { item.hidden = printState.hidden[i]; });
+  }
+  printState = null;
+});
 """
 
 
@@ -269,8 +408,22 @@ def build_report(repo, run_id, contracts):
         warnings += f'<p class="note">{manual_count} 题存在人工调整，汇总按最终结论统计；自动评估维度与差异仍保留。</p>'
     head = metrics["headline"]
     overview_class = "overview-pass" if evaluable and qualified == evaluable else "overview-review" if not counts["UNQUALIFIED"] and not counts["PARTIAL"] else ""
-    cards = [("回答合格率", rate(head["accuracy"]), f"合格 {qualified} / 可评估 {evaluable} 题"), ("回答完成率", rate(head["pass_rate"]), f"已返回回答 {generated} / 计划 {total} 题"), ("可评估率", rate(head["assessability"]), f"可评估 {evaluable} / 已记录 {len(cases)} 题"), ("已记录差异", f"{difference_count} 条", "保存的自动评估明细，非问题题数")]
-    kpis = "".join(f'<div class="kpi"><span class="label">{label}</span><strong>{display}</strong><small>{sub}</small></div>' for label, display, sub in cards)
+    def _tone(value):
+        parsed = number(value)
+        if parsed is None:
+            return ""
+        return "pass" if parsed >= 1 else "fail" if parsed <= 0 else "warn"
+
+    cards = [
+        ("回答合格率", rate(head["accuracy"]), f"合格 {qualified} / 可评估 {evaluable} 题", _tone(head["accuracy"])),
+        ("回答完成率", rate(head["pass_rate"]), f"已返回回答 {generated} / 计划 {total} 题", ""),
+        ("可评估率", rate(head["assessability"]), f"可评估 {evaluable} / 已记录 {len(cases)} 题", ""),
+        ("已记录差异", f"{difference_count} 条", "保存的自动评估明细，非问题题数", ""),
+    ]
+    kpis = "".join(
+        f'<div class="card{" " + tone if tone else ""}"><div class="num">{display}</div><div class="label">{label}</div><div class="hint">{sub}</div></div>'
+        for label, display, sub, tone in cards
+    )
     dim_cards = []
     for key, label in DIMENSIONS.items():
         dim = metrics["dimension_metrics"][key]
@@ -283,7 +436,6 @@ def build_report(repo, run_id, contracts):
             codes = set(judgment.get("issue_codes") or [])
             codes.update(diff.get("type") for diff in ((detail.get("llm_evaluation") or {}).get("evaluation") or {}).get("differences") or [] if diff.get("type"))
             issue_counts.update(codes)
-    issues = table(["问题类型", "受影响题数"], [[h(ISSUE_LABELS.get(code, code)), str(count)] for code, count in issue_counts.most_common()], numeric_cols=(1,)) if issue_counts else '<p class="note">未记录最终不合格或部分作答题目的问题类型。</p>'
     list_rows, sections = [], []
     for index, case in enumerate(cases):
         item, detail, judgment = case
@@ -313,9 +465,9 @@ def build_report(repo, run_id, contracts):
     status_summary = " · ".join(f"{label} {counts[key]} 题" for key, label in VERDICTS.items())
     return f'''<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>智能体评估报告 · {h(run_id)}</title><style>{css}</style></head><body>
 <div class="toolbar"><span>智能体评估报告 · 可离线阅读</span><button type="button" id="expand">展开全部证据</button><button type="button" id="collapse">收起证据</button><button type="button" id="print">打印 / 另存 PDF</button></div><main class="report">
-<header class="cover"><div class="eyebrow">漏损问数核验 · 评估结果报告</div><h1>{h(title)}</h1><p>智能体评估报告 · {h(run.get("agent_name") or "本次问数评估")}</p><div class="meta">批次 {h(run_id)} · 状态 {h(RUN_STATUSES.get(run_status, run_status))} · 最近评估记录 {h(local_time(timestamp))}（北京时间）</div><nav aria-label="报告目录"><a href="#overview">结果概览</a><a href="#dimensions">七维诊断</a><a href="#cases">问题与证据</a><a href="#actions">改进建议</a><a href="#method">指标口径</a></nav></header>
+<header class="cover"><div class="eyebrow">漏损问数核验 · 评估结果报告</div><h1>{h(title)}</h1><div class="sub"><span>智能体：{h(run.get("agent_name") or "本次问数评估")}</span><span>批次：{h(run_id)}</span><span>状态：{h(RUN_STATUSES.get(run_status, run_status))}</span><span>最近评估：{h(local_time(timestamp))}（北京时间）</span></div><nav aria-label="报告目录"><a href="#overview">结果概览</a><a href="#dimensions">七维诊断</a><a href="#cases">问题与证据</a><a href="#actions">改进建议</a><a href="#method">指标口径</a></nav></header>
 <section class="section {overview_class}" id="overview"><div class="section-title"><span class="index">01</span><h2>本次结果概览</h2></div><div class="conclusion"><h3>{h(title)}</h3><p>{h(conclusion)}</p></div>{warnings}<div class="kpis">{kpis}</div><p class="note">{status_summary}。结论仅适用于本次样本，不据此推断产品整体质量。</p>{distribution}</section>
-<section class="section" id="dimensions"><div class="section-title"><span class="index">02</span><h2>七维核验结果</h2></div><div class="dimensions">{"".join(dim_cards)}</div><p class="note">各维度一致率 = 一致题数 / 可核验题数；待确认与不适用不进入分母。维度来源于自动评估，不随人工结论调整改变。</p><h3>最终问题题目的类型分布</h3>{issues}<p class="note">同题同类问题计 1 次；一题可有多种问题，受影响题数不能相加作为问题总题数。</p></section>
-<section class="section" id="cases"><div class="section-title"><span class="index">03</span><h2>问题清单与核验证据</h2></div><div class="report-filters"><label for="search">查找题目</label><input id="search" type="search" placeholder="题号、问题或关键词"><label for="status">结论</label><select id="status"><option value="">全部结论</option>{options}</select><button id="reset" type="button">重置</button><span id="visible-count" class="note" aria-live="polite">显示 {len(cases)} / {len(cases)} 题</span></div><p class="note">筛选仅影响题目清单；首页统计与下方完整证据保持整批范围。点击题号定位详情。</p>{table_list}<p id="filter-empty" class="empty" hidden>没有符合筛选条件的题目。</p>{"".join(sections) if sections else '<p class="empty">本批次尚无题目结果。</p>'}</section>
+<section class="section" id="dimensions"><div class="section-title"><span class="index">02</span><h2>七维核验结果</h2></div><div class="dimensions">{"".join(dim_cards)}</div><p class="note">各维度一致率 = 一致题数 / 可核验题数；待确认与不适用不进入分母。维度来源于自动评估，不随人工结论调整改变。</p></section>
+<section class="section" id="cases"><div class="section-title"><span class="index">03</span><h2>问题清单与核验证据</h2></div><div class="report-filters"><label for="search">查找题目</label><input id="search" type="search" placeholder="题号、问题或关键词"><label for="status">结论</label><select id="status"><option value="">全部结论</option>{options}</select><button id="reset" type="button">重置</button><span id="visible-count" class="note" aria-live="polite">显示 {len(cases)} / {len(cases)} 题</span></div><p class="note">筛选仅影响题目清单；首页统计与下方完整证据保持整批范围。点击题号定位详情。</p>{table_list}<p id="filter-empty" class="empty" hidden>没有符合筛选条件的题目。</p><div class="case-stack"><h3 class="case-stack-title">题目详情</h3>{"".join(sections) if sections else '<p class="empty">本批次尚无题目结果。</p>'}</div></section>
 <section class="section" id="actions"><div class="section-title"><span class="index">04</span><h2>建议的核对与复测事项</h2></div><p class="note">以下为基于本批次问题类型的建议，尚未执行；不代表已经确定根因。</p><div class="actions">{actions}</div></section>
 <section class="section" id="method"><div class="section-title"><span class="index">05</span><h2>如何理解报告指标</h2></div><ul class="formula"><li>回答合格率：最终合格题数 / 可评估题数。不是数值单元格准确率。</li><li>回答完成率：已返回回答题数 / 计划题数。成功返回不代表回答正确。</li><li>可评估率：可评估题数 / 已记录题数；未记录题数单独展示。零分母显示暂无可评估样本。</li><li>最终结论使用持久化模型评估与人工调整；七维诊断和差异使用原自动评估记录。</li><li>标准化差值 = 回答值 − 基准值；差异率 = 差值 / 基准值绝对值。未标准化不计算；零基准不计算差异率。</li><li>模型判断置信度不等于准确率；七维一致率不能取平均替代回答合格率。</li></ul></section><footer class="footer">批次 {h(run_id)} · 所有数据来自导出时保存的评估、回答、原评分基准和人工复核记录。后续 SQL 补查单独展示，不改变历史评分。<br>本文件可离线转发；正文不包含原始请求 JSON 或会话凭据。<p class="print-hint">打印时会展开全部证据并输出完整题目清单，打印结束后恢复阅读状态。</p></footer></main><script>{REPORT_SCRIPT}</script></body></html>'''

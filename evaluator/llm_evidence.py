@@ -90,12 +90,32 @@ def _relevant_aliases(contract: CaseContract, text: str) -> Dict[str, Any]:
     return {"organizations": organizations, "metrics": metrics}
 
 
+RECONCILE_SAMPLE = 12
+
+
+def _reconcile_payload(report: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """只把程序比对的关键结论发给判分模型，差异明细截断，避免挤占上下文。"""
+    if not report:
+        return None
+    out = {
+        key: report.get(key)
+        for key in ("available", "reason", "row_key", "sql_rows", "answer_rows", "matched_rows",
+                    "checked_values", "hit_values", "row_hit_rate", "value_hit_rate")
+    }
+    out["missing_rows"] = [item.get("key") for item in (report.get("missing_rows") or [])][:RECONCILE_SAMPLE]
+    out["extra_rows"] = [item.get("key") for item in (report.get("extra_rows") or [])][:RECONCILE_SAMPLE]
+    out["wrong_values"] = (report.get("wrong_values") or [])[:RECONCILE_SAMPLE]
+    out["missing_values"] = (report.get("missing_values") or [])[:RECONCILE_SAMPLE]
+    return out
+
+
 def build_evaluation_evidence(
     contract: CaseContract,
     *,
     answer_text: str = "",
     sql_snapshot: Optional[SqlSnapshot] = None,
     alignment: Optional[Dict[str, Any]] = None,
+    reconciliation: Optional[Dict[str, Any]] = None,
     max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
 ) -> EvaluationEvidence:
     alignment = alignment or {}
@@ -120,6 +140,9 @@ def build_evaluation_evidence(
         "sql_result": _project_sql(contract, snapshot),
         "aliases": _relevant_aliases(contract, f"{contract.question}\n{answer_text}"),
     }
+    reconcile_payload = _reconcile_payload(reconciliation)
+    if reconcile_payload is not None:
+        payload["program_reconciliation"] = reconcile_payload
     encoded = stable_json(payload)
     return EvaluationEvidence(
         payload=payload,

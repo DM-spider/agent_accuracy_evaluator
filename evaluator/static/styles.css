@@ -129,14 +129,17 @@ td.num, th.num { text-align: center; font-family: var(--font); }
 #case-table th, #case-table td {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
 }
-#case-table th:nth-child(1), #case-table td:nth-child(1) { width: 72px; }
+#case-table th:nth-child(1), #case-table td:nth-child(1) { width: 92px; }
 #case-table th:nth-child(2), #case-table td:nth-child(2) { width: 96px; overflow: visible; }
-#case-table th:nth-child(4), #case-table td:nth-child(4) { width: 210px; }
-#case-table th:nth-child(5), #case-table td:nth-child(5) { width: 150px; }
+/* 主要问题只有几个字，固定窄宽；把腾出来的空间给问题正文 */
+#case-table th:nth-child(3), #case-table td:nth-child(3) { width: 120px; }
+#case-table th:nth-child(4), #case-table td:nth-child(4) { width: 34%; }
+#case-table th:nth-child(5), #case-table td:nth-child(5) { width: 190px; }
 @media (max-width: 600px) {
-  #case-table th:nth-child(1), #case-table td:nth-child(1) { width: 52px; }
+  #case-table th:nth-child(1), #case-table td:nth-child(1) { width: 68px; }
   #case-table th:nth-child(2), #case-table td:nth-child(2) { width: 88px; }
-  #case-table th:nth-child(4), #case-table td:nth-child(4) { width: 128px; }
+  #case-table th:nth-child(3), #case-table td:nth-child(3) { width: 92px; }
+  #case-table th:nth-child(4), #case-table td:nth-child(4) { width: 40%; }
   #case-table th:nth-child(5), #case-table td:nth-child(5) { width: 88px; }
 }
 .result-cell { position: relative; display: inline-flex; align-items: center; justify-content: center; padding-bottom: 6px; }

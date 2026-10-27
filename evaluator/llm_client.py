@@ -15,6 +15,7 @@ import httpx
 
 from evaluator.llm_evaluation import (
     artifact_from_evaluation,
+    coerce_payload,
     enforce_decision,
     unevaluable_artifact,
     unevaluable_result,
@@ -48,6 +49,10 @@ class _Retryable(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+class _Truncated(Exception):
+    """输出被 max_tokens 截断：换更大的预算重试，而不是直接判无法评估。"""
 
 
 class LlmEvaluator:
@@ -94,12 +99,12 @@ class LlmEvaluator:
             cleaned = cleaned.replace(self.api_key, "***")
         return cleaned
 
-    def _request(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    def _request(self, messages: List[Dict[str, str]], max_tokens: Optional[int] = None) -> Dict[str, Any]:
         body = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": self.max_output_tokens,
+            "max_tokens": int(max_tokens or self.max_output_tokens),
             "response_format": {"type": "json_object"},
         }
         headers = {
@@ -129,16 +134,35 @@ class LlmEvaluator:
         choices = payload.get("choices") or []
         if not choices:
             raise ValueError("response has no choices")
-        message = choices[0].get("message") or {}
+        choice = choices[0]
+        if str(choice.get("finish_reason") or "") == "length":
+            raise _Truncated("finish_reason=length")
+        message = choice.get("message") or {}
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             raise ValueError("response content is empty")
         return content
 
-    def _parse(self, content: str) -> LlmEvaluationResult:
+    def _parse(self, content: str):
         cleaned = _strip_code_fence(content)
         data = json.loads(cleaned)
-        return LlmEvaluationResult.model_validate(data)
+        data, notes = coerce_payload(data)
+        return LlmEvaluationResult.model_validate(data), notes
+
+    def _invalid_artifact(self, evidence, error: str, latency_ms: int, usage: Dict[str, int], content: str):
+        return LlmEvaluationArtifact(
+            evaluation=unevaluable_result("LLM_RESPONSE_INVALID", "评估 LLM 返回非法结构"),
+            provider=self.provider,
+            model=self.model,
+            prompt_version=self.prompt_version,
+            input_hash=evidence.input_hash,
+            created_at=_now(),
+            latency_ms=latency_ms,
+            token_usage=usage,
+            validation_notes=[self._sanitize(error) or "invalid_response"],
+            error=self._sanitize(error),
+            raw_response=self._sanitize(content) or None,
+        )
 
     def _usage(self, payload: Dict[str, Any]) -> Dict[str, int]:
         usage = payload.get("usage") or {}
@@ -187,10 +211,11 @@ class LlmEvaluator:
         messages = build_messages(evidence)
         attempts = self.retries + 1
         last_error = ""
+        budget = self.max_output_tokens
         for attempt in range(attempts):
             started = time.perf_counter()
             try:
-                payload = self._request(messages)
+                payload = self._request(messages, max_tokens=budget)
             except _Retryable as exc:
                 last_error = exc.reason
                 if attempt < attempts - 1:
@@ -205,28 +230,25 @@ class LlmEvaluator:
                 break
             latency_ms = int((time.perf_counter() - started) * 1000)
             usage = self._usage(payload)
+            content = ""
             try:
                 content = self._extract_content(payload)
-                result = self._parse(content)
+                result, coerce_notes = self._parse(content)
+            except _Truncated as exc:
+                last_error = "truncated_output"
+                budget = min(budget * 2, max(self.max_output_tokens, 32000))
+                if attempt < attempts - 1:
+                    self.sleep(float(attempt + 1))
+                    continue
+                return self._invalid_artifact(evidence, last_error, latency_ms, usage, content)
             except Exception as exc:
                 last_error = f"invalid_response:{type(exc).__name__}"
                 if attempt < attempts - 1:
                     self.sleep(float(attempt + 1))
                     continue
-                return LlmEvaluationArtifact(
-                    evaluation=unevaluable_result("LLM_RESPONSE_INVALID", "评估 LLM 返回非法结构"),
-                    provider=self.provider,
-                    model=self.model,
-                    prompt_version=self.prompt_version,
-                    input_hash=evidence.input_hash,
-                    created_at=_now(),
-                    latency_ms=latency_ms,
-                    token_usage=usage,
-                    validation_notes=[self._sanitize(last_error) or "invalid_response"],
-                    error=self._sanitize(last_error),
-                    raw_response=locals().get("content"),
-                )
+                return self._invalid_artifact(evidence, last_error, latency_ms, usage, content)
             result, notes = enforce_decision(result)
+            notes = coerce_notes + notes
             if result.confidence < self.min_confidence:
                 notes.append(f"置信度 {result.confidence:.2f} 低于阈值 {self.min_confidence:.2f}")
                 result = self._min_confidence_result(result)

@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-"""执行 16 题 CLI 对账，结果写入 out/results.json。"""
+"""执行 16 题 CLI 对账，结果写入当天的版本目录 out/<日期>/results.json。"""
 from __future__ import annotations
 
+import argparse
 import json
 import time
 import traceback
-from pathlib import Path
 
 from cli_eval.cases import CASES, HANDLERS
+from cli_eval.outdir import ensure_version_dir, use_date
 
-OUT = Path(__file__).resolve().parent / "out"
 ORDER = [
     "CX-033",
     "CX-032",
@@ -31,7 +31,15 @@ ORDER = [
 
 
 def main() -> None:
-    OUT.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", help="版本日期 YYYYMMDD（如 20261027），默认今天（同一天重跑会覆盖当天版本）")
+    args = parser.parse_args()
+    version = use_date(args.date)
+    out = ensure_version_dir()
+    if (out / "results.json").exists():
+        print(f"注意：{version} 已有结果，本次运行会覆盖当天版本")
+    if not (out / "golden_db").exists():
+        print(f"注意：{out / 'golden_db'} 不存在，标准值将退回黄金集里的静态结果；建议先跑 check_golden_db.py")
     results = []
     for case_id in ORDER:
         handler = HANDLERS[case_id]
@@ -65,12 +73,13 @@ def main() -> None:
             flush=True,
         )
     payload = {
+        "version": version,
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "total": len(results),
         "results": results,
     }
-    (OUT / "results.json").write_text(json.dumps(payload, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
-    print(f"\nwritten {OUT / 'results.json'}")
+    (out / "results.json").write_text(json.dumps(payload, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    print(f"\nwritten {out / 'results.json'}")
 
 
 if __name__ == "__main__":
