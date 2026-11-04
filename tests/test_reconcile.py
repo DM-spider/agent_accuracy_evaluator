@@ -139,7 +139,8 @@ def test_ratio_value_tolerates_scale_ambiguity():
     assert report["value_hit_rate"] == 1.0
 
 
-def test_extra_non_aggregate_row_caps_verdict_at_partial():
+def test_extra_non_aggregate_row_no_longer_caps_verdict():
+    """多给信息不扣分：基准值全部正确覆盖就是合格。"""
     answer = """| 单位 | 维修漏损水量 |
 |---|---|
 | 南山分公司 | 5,794.95 |
@@ -147,6 +148,82 @@ def test_extra_non_aggregate_row_caps_verdict_at_partial():
 | 龙城分公司 | 315.44 |
 """
     report = reconcile(_contract({"维修漏损水量": _volume()}), answer, SQL_ROWS)
-    assert report["row_hit_rate"] == 1.0
+    assert report["coverage"] == 1.0
+    assert report["value_recall"] == 1.0
     assert [item["key"] for item in report["extra_rows"]] == ["龙城分公司"]
+    assert verdict_from_report(report) == "QUALIFIED"
+
+
+def test_prose_list_items_are_extracted():
+    """无表格、纯列表形式的回答也要能比对。"""
+    answer = """结论如下：
+- 南山分公司：5,794.95
+- 福田分公司：3,011.92
+"""
+    report = reconcile(_contract({"维修漏损水量": _volume()}), answer, SQL_ROWS)
+    assert report["available"] is True
+    assert report["coverage"] == 1.0
+    assert verdict_from_report(report) == "QUALIFIED"
+
+
+def test_pipe_table_without_border_marks():
+    answer = """单位 | 维修漏损水量
+南山分公司 | 5,794.95
+福田分公司 | 3,011.92
+"""
+    report = reconcile(_contract({"维修漏损水量": _volume()}), answer, SQL_ROWS)
+    assert report["available"] is True
+    assert report["coverage"] == 1.0
+
+
+def test_result_table_wins_over_process_table():
+    """过程表在前时不应抢走比对：区域得分低的被降权。"""
+    answer = """### 取证过程
+
+| 单位 | 维修漏损水量 |
+|---|---|
+| 南山分公司 | 1.00 |
+| 福田分公司 | 2.00 |
+
+### 结论
+
+| 单位 | 维修漏损水量 |
+|---|---|
+| 南山分公司 | 5,794.95 |
+| 福田分公司 | 3,011.92 |
+"""
+    report = reconcile(_contract({"维修漏损水量": _volume()}), answer, SQL_ROWS)
+    assert report["coverage"] == 1.0
+    assert verdict_from_report(report) == "QUALIFIED"
+
+
+def test_rounded_answer_is_tolerated():
+    """8.4% 与基准 8.35% 是四舍五入关系，不算错值。"""
+    spec = MeasureSpec(
+        label="产销差率", unit="%", value_scale="ratio01", sql_column="产销差率",
+        tolerance=Tolerance(kind="abs", eps=0.01),
+    )
+    contract = _contract({"产销差率": spec})
+    answer = """| 单位 | 产销差率 |
+|---|---|
+| 南山分公司 | 8.4% |
+"""
+    sql = [{"组织": "南山分公司", "产销差率": 0.0835}]
+    report = reconcile(contract, answer, sql)
+    assert report["coverage"] == 1.0
+    assert report["value_recall"] == 1.0
+
+
+def test_absent_value_is_not_counted_as_wrong():
+    """定位不到只降低 coverage，不进入错误统计。"""
+    answer = """| 单位 | 维修漏损水量 |
+|---|---|
+| 南山分公司 | 5,794.95 |
+"""
+    report = reconcile(_contract({"维修漏损水量": _volume()}), answer, SQL_ROWS)
+    assert report["counts"]["absent"] == 1
+    assert report["counts"]["wrong"] == 0
+    assert report["coverage"] == 0.5
+    assert report["value_recall"] == 1.0
     assert verdict_from_report(report) == "PARTIAL"
+

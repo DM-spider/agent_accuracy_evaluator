@@ -14,6 +14,7 @@ import httpx
 
 from evaluator.curl_config import STREAM_URL
 from evaluator.models import AgentAnswer, CaseContract, RunContext
+from evaluator.process_trace import TERMINAL_KINDS, TraceRecorder
 
 TIME_KEYS = {"period", "businessyearmonth", "yearmonth", "ym", "start_date", "end_date", "date_start", "date_end"}
 
@@ -181,6 +182,8 @@ class StreamAgentClient:
                        first_body_ms=None, first_answer_ms=None, completed_ms=None,
                        server_duration_ms=None)
         counts, events, text_parts, time_hints = Counter(), [], {}, []
+        # 过程条目单独收集：只留 output_item 与终态事件，够还原「执行记录」时间轴。
+        recorder = TraceRecorder(self.login_session)
         response_id = None
         total_bytes = 0
         remote_error = {}
@@ -222,6 +225,12 @@ class StreamAgentClient:
                         counts[kind] += 1
                         if len(events) < 2000:
                             events.append({"type": kind, "elapsed_ms": elapsed()})
+                        if kind == "response.output_item.done":
+                            item = payload.get("item") or {}
+                            if isinstance(item, dict) and item.get("type"):
+                                recorder.add(str(item["type"]), elapsed(), item)
+                        elif kind in TERMINAL_KINDS:
+                            recorder.add(kind, elapsed(), {"type": kind})
                         incoming_session = payload.get("session_id") or payload.get("sessionId")
                         if incoming_session and incoming_session != self.session_id:
                             raise ValueError("SESSION_MISMATCH")
@@ -280,7 +289,10 @@ class StreamAgentClient:
             answer.response_body = {"answer": answer.text, "completion_status": answer.completion_status,
                                     "response_id": response_id, "event_counts": dict(counts),
                                     "events": events, "timings": timings, "time_hints": time_hints,
-                                    "error": answer.error}
+                                    "error": answer.error,
+                                    # 过程明细由 repository 单独落 process.json，不进 agent_answer.json
+                                    "process": recorder.items(),
+                                    "process_truncated": recorder.truncated}
             if remote_error:
                 answer.response_body["remote_error"] = remote_error
             # Defense in depth if a response echoes the login cookie.

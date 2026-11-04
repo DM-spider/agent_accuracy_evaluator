@@ -159,6 +159,7 @@ class Repository:
         agent_raw: Any = None,
         sql_payload: Any = None,
         logs: Any = None,
+        process_payload: Any = None,
     ) -> None:
         case_dir = self.run_dir(run_id) / "cases" / result.case_id
         case_dir.mkdir(parents=True, exist_ok=True)
@@ -169,6 +170,8 @@ class Repository:
             (case_dir / "sql_snapshot.json").write_text(json.dumps(sql_payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         if logs is not None:
             (case_dir / "logs.json").write_text(json.dumps(logs, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        if process_payload is not None:
+            self._save_process(case_dir, process_payload)
         (case_dir / "result.json").write_text(result.model_dump_json(indent=2), encoding="utf-8")
 
         with self._connect() as conn:
@@ -191,6 +194,23 @@ class Repository:
                     1 if result.reviewed else 0,
                 ),
             )
+
+    def _save_process(self, case_dir: Path, payload: Dict[str, Any]) -> None:
+        """过程明细单独落盘：原始轨迹写 jsonl，展示用归一化结果写 process.json。
+
+        steps/thoughts/notes 与 timeline 内容重复，只保留 timeline，避免详情接口
+        每次读一份两倍大的文件。
+        """
+        data = dict(payload)
+        trace = data.pop("trace", None) or []
+        for key in ("steps", "thoughts", "notes"):
+            data.pop(key, None)
+        (case_dir / "process.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+        )
+        if trace:
+            lines = [json.dumps(item, ensure_ascii=False, default=str) for item in trace]
+            (case_dir / "trace.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def save_llm_evaluation(self, run_id: str, case_id: str, artifact: LlmEvaluationArtifact) -> str:
         """写入唯一权威的 llm_evaluation.json；覆盖前归档旧版本。"""
@@ -294,7 +314,7 @@ class Repository:
         case_dir = self.run_dir(run_id) / "cases" / case_id
         detail = dict(cases[case_id])
         detail["sql_rechecks"] = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((case_dir / "sql_rechecks").glob("*.json"))]
-        for name in ("result.json", "agent_answer.json", "sql_snapshot.json", "llm_evaluation.json", "logs.json"):
+        for name in ("result.json", "agent_answer.json", "sql_snapshot.json", "llm_evaluation.json", "logs.json", "process.json"):
             path = case_dir / name
             key = name.replace(".json", "")
             if path.exists():

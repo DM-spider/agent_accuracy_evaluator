@@ -321,6 +321,58 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .log-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 32px; }
 .log-columns > section { display: grid; grid-row: span 3; grid-template-rows: subgrid; }
 .sql-layout section, .log-columns section { min-width: 0; }
+/* 执行记录：过程概览 + 时间轴 */
+.proc-block { margin-bottom: 20px; }
+.proc-block > h3 { margin: 0 0 4px; }
+.proc-flags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.proc-flag { display: inline-block; padding: 2px 10px; border-radius: 999px; background: rgba(176, 58, 46, 0.1); color: var(--stamp-fail, #b03a2e); font-size: 12px; }
+.proc-timeline { list-style: none; margin: 10px 0 0; padding: 0 0 0 14px; border-left: 2px solid #dce3e5; }
+.proc-item { position: relative; padding: 8px 0 10px 16px; border-bottom: 1px dashed #e2e7e9; }
+.proc-item:last-child { border-bottom: 0; }
+.proc-item::before { content: ""; position: absolute; left: -21px; top: 14px; width: 8px; height: 8px; border-radius: 50%; background: #aab6ba; }
+.proc-step::before { background: var(--teal, #1f6f6b); }
+.proc-status-empty::before { background: #c9931c; }
+.proc-status-error::before, .proc-status-timeout::before { background: #b03a2e; }
+.proc-status-pending::before { background: #fff; border: 2px solid #aab6ba; }
+.proc-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 13px; }
+.proc-t { color: #7c878b; font-variant-numeric: tabular-nums; min-width: 58px; }
+.proc-kind { font-size: 11px; padding: 0 6px; border: 1px solid #dce3e5; border-radius: 4px; color: #596367; }
+.proc-badge { font-size: 11px; padding: 0 6px; border-radius: 4px; background: #eef2f3; color: #596367; }
+.proc-status-ok .proc-badge { background: rgba(31, 111, 107, 0.12); color: #1f6f6b; }
+.proc-status-empty .proc-badge { background: rgba(201, 147, 28, 0.16); color: #8a6410; }
+.proc-status-error .proc-badge, .proc-status-timeout .proc-badge { background: rgba(176, 58, 46, 0.14); color: #b03a2e; }
+.proc-meta { color: #7c878b; font-size: 12px; }
+.proc-line { margin-top: 4px; font-size: 12px; overflow-wrap: anywhere; }
+.proc-key { display: inline-block; min-width: 58px; color: #7c878b; }
+.proc-item p { margin: 4px 0 0; font-size: 13px; color: #596367; overflow-wrap: anywhere; }
+.proc-item pre { max-height: 260px; overflow: auto; }
+.proc-thought p, .proc-note p { white-space: pre-wrap; }
+/* 执行记录两段式：一、智能体执行；二、SQL 查询与核验 */
+.proc-part { margin-bottom: 28px; }
+.proc-part-title { margin: 0 0 12px; padding-bottom: 6px; border-bottom: 1px solid #dce3e5; font-size: 19px; }
+.proc-block { margin-bottom: 20px; }
+.proc-block > h4 { margin: 0 0 2px; font-size: 16px; font-weight: 600; color: #596367; }
+.proc-headline { display: flex; align-items: center; gap: 10px; margin: 8px 0 10px; font-size: 13px; }
+.proc-result { padding: 2px 10px; border-radius: 4px; font-weight: 600; }
+.proc-result.ok { background: rgba(31, 111, 107, 0.12); color: #1f6f6b; }
+.proc-result.fail { background: rgba(176, 58, 46, 0.14); color: #b03a2e; }
+.proc-verdict { margin: 6px 0 10px; font-weight: 600; }
+.verdict-process_healthy { color: #1f6f6b; }
+.verdict-process_attention { color: #8a6410; }
+.verdict-process_risk { color: #b03a2e; }
+.verdict-process_unknown { color: #7c878b; }
+.proc-findings { list-style: none; margin: 0; padding: 0; }
+.proc-finding { padding: 8px 0; border-bottom: 1px dashed #e2e7e9; }
+.proc-finding:last-child { border-bottom: 0; }
+.proc-finding-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.proc-finding p { margin: 4px 0 0; font-size: 12px; color: #596367; }
+.proc-sev { font-size: 11px; padding: 0 6px; border-radius: 4px; background: #eef2f3; color: #596367; }
+.sev-high .proc-sev { background: rgba(176, 58, 46, 0.14); color: #b03a2e; }
+.sev-medium .proc-sev { background: rgba(201, 147, 28, 0.16); color: #8a6410; }
+.proc-suggest { margin-top: 12px; }
+.proc-suggest h4 { margin: 0 0 6px; font-size: 13px; color: #596367; }
+.proc-suggest ul { margin: 0; padding-left: 20px; font-size: 13px; }
+.proc-suggest li { margin: 4px 0; }
 .info-rows { margin: 8px 0 20px; font-size: 13px; }
 .info-rows > div { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 12px 24px; padding: 10px 0; border-bottom: 1px solid #e2e7e9; }
 .info-rows dt { color: #596367; overflow-wrap: anywhere; text-align: left; }

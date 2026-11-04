@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -372,7 +373,30 @@ def _rate_status(rate: Optional[float], floor: float) -> DimensionStatus:
     return DimensionStatus.MISMATCH
 
 
-def apply_reconciliation(contract, artifact: LlmEvaluationArtifact, report: Optional[dict]) -> LlmEvaluationArtifact:
+def _veto_evidence_ok(evaluation: LlmEvaluationResult, answer_text: str) -> bool:
+    """期间/粒度/单位/口径的否决必须能在回答原文里定位到证据。
+
+    没有原文时保持旧的信任策略（离线复算、单元测试等场景）。
+    """
+    if not answer_text:
+        return True
+    squeezed = re.sub(r"\s+", "", answer_text)
+    for item in evaluation.differences:
+        if item.type not in VETO_CODES:
+            continue
+        span = re.sub(r"\s+", "", str(item.evidence or ""))
+        if span and span in squeezed:
+            return True
+    return False
+
+
+def apply_reconciliation(
+    contract,
+    artifact: LlmEvaluationArtifact,
+    report: Optional[dict],
+    *,
+    answer_text: str = "",
+) -> LlmEvaluationArtifact:
     """用程序逐行比对结果覆盖结论。
 
     LLM 只保留"期间/粒度/单位/口径"这类语义判断；数字对错以程序为准。
@@ -385,20 +409,29 @@ def apply_reconciliation(contract, artifact: LlmEvaluationArtifact, report: Opti
     evaluation = artifact.evaluation
     notes = list(artifact.validation_notes)
     if any(code in VETO_CODES for code in evaluation.issue_codes):
-        notes.append("程序复核未覆盖语义层判定的期间/粒度/单位/口径问题，保留 LLM 结论")
-        return artifact.model_copy(update={"validation_notes": notes})
+        if not _veto_evidence_ok(evaluation, answer_text):
+            notes.append("期间/粒度/单位/口径否决缺少可在回答中定位的证据，按普通差异处理")
+        else:
+            notes.append("程序复核未覆盖语义层判定的期间/粒度/单位/口径问题，保留 LLM 结论")
+            return artifact.model_copy(update={"validation_notes": notes})
 
-    row_rate = report.get("row_hit_rate")
-    value_rate = report.get("value_hit_rate")
+    row_rate = report.get("coverage")
+    if row_rate is None:
+        row_rate = report.get("row_hit_rate")
+    value_rate = report.get("value_recall")
+    if value_rate is None:
+        value_rate = report.get("value_hit_rate")
     dims = dict(evaluation.dimensions)
     dims["row_coverage"] = DimensionEvaluation(
         status=_rate_status(row_rate, 0.5),
-        reason=f"程序核对：{report.get('matched_rows', 0)}/{report.get('sql_rows', 0)} 行命中",
+        reason=f"程序核对：{report.get('matched_rows', 0)}/{report.get('sql_rows', 0)} 行命中"
+               + (f"，基准值覆盖 {report.get('coverage')}" if report.get("coverage") is not None else ""),
     )
     if value_rate is not None:
         dims["numeric_accuracy"] = DimensionEvaluation(
             status=_rate_status(value_rate, 0.5),
-            reason=f"程序核对：{report.get('hit_values', 0)}/{report.get('checked_values', 0)} 个数值在契约容差内",
+            reason=f"程序核对：{report.get('hit_values', 0)}/{report.get('checked_values', 0)} 个数值在契约容差内"
+                   + (f"，已定位部分正确率 {report.get('value_recall')}" if report.get("value_recall") is not None else ""),
         )
 
     codes = list(evaluation.issue_codes)

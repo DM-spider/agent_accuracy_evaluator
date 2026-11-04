@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -119,9 +120,19 @@ def test_existing_export_endpoint_returns_new_report(tmp_path, monkeypatch):
     response = TestClient(app).get("/api/runs/r/export?format=html")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert 'filename="report.html"' in response.headers["content-disposition"]
+    assert re.search(r'filename="report_\d{8}_\d{4}\.html"', response.headers["content-disposition"])
     assert "回答合格率" in response.text
     assert "标准化差值" in response.text
+
+
+def test_export_stamp_uses_batch_time():
+    from evaluator.api import _export_stamp
+
+    assert _export_stamp({"started_at": "2026-11-03T20:56:03+08:00"}) == "20261103_2056"
+    # UTC 输入要换算到北京时间
+    assert _export_stamp({"started_at": "2026-11-03T12:56:03+00:00"}) == "20261103_2056"
+    assert _export_stamp({"anchor_time": "2026-11-04T09:00:00+08:00"}) == "20261104_0900"
+    assert re.fullmatch(r"\d{8}_\d{4}", _export_stamp({}))
 
 
 def _ratio_contract():

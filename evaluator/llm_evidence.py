@@ -99,13 +99,19 @@ def _reconcile_payload(report: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
         return None
     out = {
         key: report.get(key)
-        for key in ("available", "reason", "row_key", "sql_rows", "answer_rows", "matched_rows",
-                    "checked_values", "hit_values", "row_hit_rate", "value_hit_rate")
+        for key in ("available", "reason", "schema_version", "row_key", "sql_rows", "answer_rows",
+                    "matched_rows", "checked_values", "hit_values", "row_hit_rate", "value_hit_rate",
+                    "counts", "coverage", "value_recall", "absent_rate")
     }
     out["missing_rows"] = [item.get("key") for item in (report.get("missing_rows") or [])][:RECONCILE_SAMPLE]
     out["extra_rows"] = [item.get("key") for item in (report.get("extra_rows") or [])][:RECONCILE_SAMPLE]
     out["wrong_values"] = (report.get("wrong_values") or [])[:RECONCILE_SAMPLE]
     out["missing_values"] = (report.get("missing_values") or [])[:RECONCILE_SAMPLE]
+    # 未定位项要单独告知，否则判分模型会把"没抽到"当成"没给"
+    out["absent_values"] = [
+        {"key": item.get("key"), "field": item.get("measure")}
+        for item in (report.get("items") or []) if item.get("status") == "ABSENT"
+    ][:RECONCILE_SAMPLE]
     return out
 
 

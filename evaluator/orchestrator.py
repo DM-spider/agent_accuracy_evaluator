@@ -11,6 +11,7 @@ from evaluator.answer_context import align_answer, params_for_period
 from evaluator.llm_evidence import DEFAULT_MAX_INPUT_CHARS, build_evaluation_evidence
 from evaluator.llm_evaluation import apply_reconciliation, unevaluable_artifact, validate_numeric_differences
 from evaluator.reconcile import reconcile
+from evaluator.process_trace import build_process
 from evaluator.models import (
     AgentAnswer,
     CaseContract,
@@ -35,6 +36,10 @@ def _now() -> str:
 def _agent_raw(answer: Optional[AgentAnswer]) -> Optional[Dict[str, Any]]:
     if answer is None:
         return None
+    # 过程明细单独落 process.json，不复制进 agent_answer.json。
+    response = dict(answer.response_body or {})
+    response.pop("process", None)
+    response.pop("process_truncated", None)
     return {
         "http": {
             "method": "POST",
@@ -42,7 +47,7 @@ def _agent_raw(answer: Optional[AgentAnswer]) -> Optional[Dict[str, Any]]:
             "status": answer.http_status,
         },
         "request": answer.request_body,
-        "response": answer.response_body,
+        "response": response,
     }
 
 
@@ -271,6 +276,7 @@ class Orchestrator:
         sql_snapshot: Optional[SqlSnapshot],
         alignment: Dict[str, Any],
         reconciliation: Optional[Dict[str, Any]] = None,
+        answer_text: str = "",
     ):
         max_chars = int(getattr(self.llm_evaluator, "max_input_chars", DEFAULT_MAX_INPUT_CHARS) or DEFAULT_MAX_INPUT_CHARS)
         evidence = build_evaluation_evidence(
@@ -291,13 +297,13 @@ class Orchestrator:
             prompt_version=prompt_version,
         )
         if reusable:
-            return apply_reconciliation(contract, LlmEvaluationArtifact.model_validate(reusable), reconciliation), True
+            return apply_reconciliation(contract, LlmEvaluationArtifact.model_validate(reusable), reconciliation, answer_text=answer_text), True
         if self.llm_evaluator is None:
             return apply_reconciliation(contract, unevaluable_artifact(
                 "LLM_CALL_FAILED",
                 "评估 LLM 未配置，本题无法自动评估",
                 input_hash=evidence.input_hash,
-            ), reconciliation), False
+            ), reconciliation, answer_text=answer_text), False
         try:
             artifact = self.llm_evaluator.evaluate(evidence, contract)
         except Exception as exc:  # 单题 LLM 失败不能中断整批
@@ -306,8 +312,8 @@ class Orchestrator:
                 f"评估 LLM 调用异常：{type(exc).__name__}",
                 input_hash=evidence.input_hash,
                 error=type(exc).__name__,
-            ), reconciliation), False
-        return apply_reconciliation(contract, validate_numeric_differences(contract, artifact), reconciliation), False
+            ), reconciliation, answer_text=answer_text), False
+        return apply_reconciliation(contract, validate_numeric_differences(contract, artifact), reconciliation, answer_text=answer_text), False
 
     def _run_one(self, run_context: RunContext, contract: CaseContract, turn: int = 0) -> CaseResult:
         logs: Dict[str, Any] = {"retries": 0, "exceptions": []}
@@ -345,10 +351,13 @@ class Orchestrator:
             if agent_failed:
                 logs["agent_error"] = agent_answer.error
             else:
-                alignment, extract_text = align_answer(
+                # 期间对齐用保守的主回答块；数值比对要用完整答案，否则先出现的
+                # 过程表会把后面的结果表整段裁掉（见答案比对优化方案 R1）。
+                alignment, answer_block = align_answer(
                     contract, run_context, agent_answer.text,
                     (agent_answer.response_body or {}).get("time_hints"),
                 )
+                extract_text = answer_block
                 if alignment.get("sql_params"):
                     params = alignment["sql_params"]
                 else:
@@ -392,18 +401,21 @@ class Orchestrator:
             alignment["effective_period"] = alignment.get("effective_period") or alignment.get("sql_period")
 
         # 程序先按契约容差逐行比对，数值对错由它决定；LLM 只补充语义层判断。
-        report = reconcile(contract, extract_text, sql_snapshot.rows if sql_snapshot else [], params)
+        report = reconcile(contract, agent_answer.text if agent_answer else "", sql_snapshot.rows if sql_snapshot else [], params)
         alignment["reconciliation"] = {
             key: report.get(key)
-            for key in ("available", "reason", "sql_rows", "answer_rows", "matched_rows",
-                        "checked_values", "hit_values", "row_hit_rate", "value_hit_rate")
+            for key in ("available", "reason", "schema_version", "sql_rows", "answer_rows", "matched_rows",
+                        "checked_values", "hit_values", "row_hit_rate", "value_hit_rate",
+                        "counts", "coverage", "value_recall", "absent_rate")
         }
         alignment["reconciliation"]["missing_rows"] = [item.get("key") for item in report.get("missing_rows") or []][:12]
         alignment["reconciliation"]["extra_rows"] = [item.get("key") for item in report.get("extra_rows") or []][:12]
+        alignment["reconciliation"]["items"] = (report.get("items") or [])[:60]
 
         # 结论来源：程序比对 + LLM 结构化评估；失败保存 UNEVALUABLE。
         artifact, reused = self._evaluate_with_llm(
-            run_context, contract, extract_text, sql_snapshot, alignment, report
+            run_context, contract, extract_text, sql_snapshot, alignment, report,
+            answer_text=agent_answer.text if agent_answer else "",
         )
         if not reused:
             self.repo.save_llm_evaluation(run_context.run_id, contract.case_id, artifact)
@@ -425,5 +437,6 @@ class Orchestrator:
             agent_raw=_agent_raw(agent_answer),
             sql_payload=sql_snapshot.model_dump(mode="json") if sql_snapshot else None,
             logs=logs,
+            process_payload=build_process(agent_answer) if agent_answer else None,
         )
         return result

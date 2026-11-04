@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -472,22 +473,49 @@ def set_verdict(run_id: str, case_id: str, body: VerdictBody) -> Dict[str, Any]:
     }
 
 
+def _export_stamp(run: Dict[str, Any], timezone_name: str = "Asia/Shanghai") -> str:
+    """导出文件名里的日期编号：优先批次开始时间，其次锚点时间，最后当前时刻。
+
+    用批次时间而不是导出时刻，导出同一批次始终得到同一个名字，不会在 export
+    目录里堆出一串同内容文件。
+    """
+    for key in ("started_at", "anchor_time"):
+        raw = str(run.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone(timedelta(hours=8)))
+        try:
+            tz = ZoneInfo(timezone_name)
+        except Exception:
+            tz = timezone(timedelta(hours=8))
+        return moment.astimezone(tz).strftime("%Y%m%d_%H%M")
+    return datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M")
+
+
 @router.get("/api/runs/{run_id}/export")
 def export_run(run_id: str, format: str = Query("json")):
     repo: Repository = state()["repo"]
-    if not repo.get_run(run_id):
+    run = repo.get_run(run_id)
+    if not run:
         _error("not_found", "run not found", 404)
     export_dir = runs_dir() / run_id / "export"
     export_dir.mkdir(parents=True, exist_ok=True)
+    timezone_name = str((run.get("summary") or {}).get("timezone") or "Asia/Shanghai")
+    stamp = _export_stamp(run, timezone_name)
     fmt = format.lower()
     if fmt == "json":
-        path = export_json(repo, run_id, export_dir / "report.json")
+        path = export_json(repo, run_id, export_dir / f"report_{stamp}.json")
         media = "application/json"
     elif fmt in {"xlsx", "csv", "excel"}:
-        path = export_xlsx(repo, run_id, export_dir / "report.xlsx")
+        path = export_xlsx(repo, run_id, export_dir / f"report_{stamp}.xlsx")
         media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     elif fmt == "html":
-        path = export_html(repo, run_id, export_dir / "report.html")
+        path = export_html(repo, run_id, export_dir / f"report_{stamp}.html")
         media = "text/html"
     else:
         _error("invalid_format", "format 必须是 json / xlsx / html")

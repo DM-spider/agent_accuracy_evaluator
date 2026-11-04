@@ -142,14 +142,22 @@ function reconciliationRows(recon) {
     return `<p class="empty">未做逐行比对：${escapeHtml(reason || "不可比")}</p>`;
   }
   const pct = value => (value === null || value === undefined ? "—" : `${Math.round(value * 1000) / 10}%`);
-  return infoRows([
+  const counts = recon.counts || null;
+  const rows = [
     ["行命中", `${recon.matched_rows ?? 0} / ${recon.sql_rows ?? 0}`],
     ["数值命中", `${recon.hit_values ?? 0} / ${recon.checked_values ?? 0}`],
     ["行命中率", pct(recon.row_hit_rate)],
     ["数值命中率", pct(recon.value_hit_rate)],
-    ["缺失行", (recon.missing_rows || []).join("、") || "无"],
-    ["多出行", (recon.extra_rows || []).join("、") || "无"],
-  ]);
+  ];
+  // v2 语义：coverage 是基准值被正确给出的比例，value_recall 只看已定位部分。
+  if (recon.coverage !== undefined && recon.coverage !== null) {
+    rows.push(["基准值覆盖率", pct(recon.coverage)]);
+    rows.push(["已定位正确率", pct(recon.value_recall)]);
+    rows.push(["未定位项", `${counts?.absent ?? 0} 个（不算答错）`]);
+  }
+  rows.push(["缺失行", (recon.missing_rows || []).join("、") || "无"]);
+  rows.push(["多出行", (recon.extra_rows || []).join("、") || "无"]);
+  return infoRows(rows);
 }
 
 // psycopg/pg8000 的错误是字典（M 是消息），直接 escapeHtml 只会得到 [object Object]。
@@ -499,6 +507,137 @@ async function renderRun() {
   await poll();
 }
 
+const stepStatusLabels = {ok: "成功", empty: "空结果", error: "失败", timeout: "超时", pending: "未完成", unknown: "未记录"};
+const stepTypeLabels = {tool: "取数", shell: "命令", poll: "轮询"};
+const stepFlagLabels = {
+  TOOL_TIMEOUT: "存在工具超时",
+  TOOL_ERROR: "存在工具失败",
+  EMPTY_RESULT_HIGH: "空结果占比高",
+  MANY_STEPS: "步骤偏多",
+  TRACE_TRUNCATED: "过程记录被截断",
+};
+
+// 智能体运行概览：把「运行信息」和「过程统计」合成一块，过程信号不参与评分口径。
+function agentOverview(result, timing, process) {
+  const rows = [
+    ["轮次", result.turn_index],
+    ["回答状态", result.completion_status],
+    ["首段回答", duration(timing.first_answer_ms)],
+    ["完整响应", duration(timing.completed_ms)],
+    ["传输总耗时", duration(timing.transport_total_ms ?? result.agent_latency_ms)],
+    ["开始（北京时间）", localTime(timing.started_at)],
+    ["结束（北京时间）", localTime(timing.finished_at)],
+    ["重试次数", result.retries || 0],
+  ];
+  if (process) {
+    const summary = process.summary || {};
+    const counts = process.counts || {};
+    rows.push(["过程步骤", `${summary.steps ?? 0} 步 · 工具 ${counts.tool_calls ?? 0} / 命令 ${counts.shell ?? 0} / 轮询 ${counts.poll ?? 0}`]);
+    rows.push(["工具结果", `成功 ${counts.ok || 0} · 空结果 ${counts.empty || 0} · 失败或超时 ${(counts.error || 0) + (counts.timeout || 0)} · 未完成 ${counts.pending || 0}`]);
+    rows.push(["首步耗时", summary.first_tool_ms == null ? "未记录" : compactDuration(summary.first_tool_ms)]);
+    rows.push(["推理摘要", `${summary.thoughts ?? 0} 段 · 过程叙述 ${summary.notes ?? 0} 段`]);
+  }
+  const flags = ((process || {}).flags || []).map(flag => `<span class="proc-flag">${escapeHtml(stepFlagLabels[flag] || flag)}</span>`).join("");
+  return `${infoRows(rows)}${flags ? `<div class="proc-flags">${flags}</div>` : ""}`;
+}
+
+// 历史批次只有事件类型与时刻，至少把事件时间轴还原出来。
+function legacyEvents(resp) {
+  const events = Array.isArray(resp.events) ? resp.events : [];
+  if (!events.length) return '<p class="empty">本题没有记录到事件。</p>';
+  const rows = events.slice(0, 80).map(event => `<tr><td>${compactDuration(event.elapsed_ms)}</td><td>${escapeHtml(event.type || "")}</td></tr>`).join("");
+  return `<p class="note">本题产生于过程采集上线前，只记录了事件类型与时刻，没有工具调用、参数和返回内容。重新跑一批即可看到完整执行时间轴。</p>
+    <table class="caliber-table"><thead><tr><th>时刻</th><th>事件</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// 执行结果：这一轮到底有没有完整拿到回答。
+function executionResult(result, resp, logs) {
+  const status = String(result.completion_status || "unknown");
+  const error = errorText(logs.agent_error) || errorText(resp.error) || "";
+  const ok = status === "completed" && !error;
+  const label = ok ? "成功" : status === "not_sent" ? "未发送" : "失败";
+  const headline = ok
+    ? "本轮完整收到回答（response.completed）"
+    : status === "not_sent"
+      ? "本轮没有发出，或连接没有建立"
+      : `本轮未完整结束：${error || status}`;
+  const exceptions = logs.exceptions || [];
+  const exceptionBlock = exceptions.length
+    ? `<details><summary>异常类型 · ${exceptions.length}</summary><pre>${escapeHtml(JSON.stringify(exceptions, null, 2))}</pre></details>`
+    : "";
+  return `<p class="proc-headline"><span class="proc-result ${ok ? "ok" : "fail"}">${label}</span>${escapeHtml(headline)}</p>
+    ${infoRows([
+      ["回答状态", status],
+      ["协议终态", resp.completion_status || "未记录"],
+      ["未评分原因", result.not_scored_reason],
+      ["主要问题码", result.primary_failure],
+      ["错误类型", (result.error_types || []).join("、")],
+      ["智能体错误", error || "无"],
+    ])}${exceptionBlock}`;
+}
+
+// 过程评测：指出问题、给出建议。没有过程数据时明确说明无法评测。
+function processReviewPanel(review, hasProcess) {
+  if (!hasProcess) return '<p class="empty">本题没有过程数据，无法评估执行过程。</p>';
+  if (!review) return '<p class="empty">本题没有生成过程评测。</p>';
+  const labels = {
+    PROCESS_HEALTHY: "未发现明显过程问题",
+    PROCESS_ATTENTION: "存在需要关注的过程问题",
+    PROCESS_RISK: "存在明显过程问题",
+    PROCESS_UNKNOWN: "过程证据不足，暂不评价",
+  };
+  const findings = (review.findings || []).map(item => `<li class="proc-finding sev-${escapeHtml(String(item.severity || "LOW").toLowerCase())}">
+      <div class="proc-finding-head"><span class="proc-sev">${escapeHtml(item.severity === "HIGH" ? "高" : item.severity === "MEDIUM" ? "中" : "低")}</span><strong>${escapeHtml(item.title || "")}</strong></div>
+      <p>${escapeHtml(item.detail || "")}</p></li>`).join("");
+  const suggestions = (review.suggestions || []).map(text => `<li>${escapeHtml(text)}</li>`).join("");
+  return `<p class="proc-verdict verdict-${escapeHtml(String(review.verdict || "").toLowerCase())}">${escapeHtml(labels[review.verdict] || review.verdict || "")}</p>
+    ${findings ? `<ul class="proc-findings">${findings}</ul>` : ""}
+    ${suggestions ? `<div class="proc-suggest"><h4>建议</h4><ul>${suggestions}</ul></div>` : ""}`;
+}
+
+function timelineEntry(entry) {
+  const t = entry.t_ms == null ? "—" : compactDuration(entry.t_ms);
+  if (entry.kind === "thought") {
+    return `<li class="proc-item proc-thought"><div class="proc-head"><span class="proc-t">${t}</span><span class="proc-kind">推理</span></div><p>${escapeHtml(entry.text || "")}</p></li>`;
+  }
+  if (entry.kind === "note") {
+    return `<li class="proc-item proc-note"><div class="proc-head"><span class="proc-t">${t}</span><span class="proc-kind">叙述</span></div><p>${escapeHtml(entry.text || "")}</p></li>`;
+  }
+  const step = entry.step || {};
+  const status = String(step.status || "pending");
+  const codes = (step.codes || []).filter(Boolean);
+  const title = codes.length ? codes.join("、") : (step.action ? `process · ${step.action}` : (step.command_line ? step.command_line.slice(0, 60) : "工具调用"));
+  const params = step.params && Object.keys(step.params).length
+    ? Object.entries(step.params).map(([key, value]) => `${key}=${value}`).join("，")
+    : "";
+  const meta = [
+    step.rows != null ? `${step.rows} 行` : "",
+    step.latency_ms != null ? compactDuration(step.latency_ms) : "",
+    step.exit_reason ? String(step.exit_reason) : "",
+  ].filter(Boolean).join(" · ");
+  const blocks = [];
+  if (params) blocks.push(`<div class="proc-line"><span class="proc-key">参数</span>${escapeHtml(params)}</div>`);
+  if (step.command) blocks.push(`<details><summary>查看命令</summary><pre>${escapeHtml(step.command)}</pre></details>`);
+  if (step.excerpt) blocks.push(`<div class="proc-line"><span class="proc-key">输出摘录</span>${escapeHtml(step.excerpt)}</div>`);
+  return `<li class="proc-item proc-step proc-status-${escapeHtml(status)}">
+    <div class="proc-head"><span class="proc-t">${t}</span><span class="proc-kind">${escapeHtml(stepTypeLabels[step.type] || "工具")}</span><strong>${escapeHtml(title)}</strong><span class="proc-badge">${escapeHtml(stepStatusLabels[status] || status)}</span>${meta ? `<span class="proc-meta">${escapeHtml(meta)}</span>` : ""}</div>
+    ${blocks.join("")}
+  </li>`;
+}
+
+function processTimeline(process) {
+  const timeline = process.timeline || [];
+  if (!timeline.length) {
+    return process.truncated
+      ? '<p class="empty">过程条目在采集阶段被截断，没有可展示的步骤。</p>'
+      : '<p class="empty">本题没有记录到工具调用或推理摘要。</p>';
+  }
+  const limit = 120;
+  const items = timeline.slice(0, limit).map(timelineEntry).join("");
+  const more = timeline.length > limit ? `<p class="note">仅显示前 ${limit} 条，共 ${timeline.length} 条；完整轨迹见本题目录下的 trace.jsonl。</p>` : "";
+  return `<ol class="proc-timeline">${items}</ol>${more}`;
+}
+
 async function renderCaseTable(runId) {
   const params = new URLSearchParams();
   const q = document.getElementById("q").value;
@@ -611,15 +750,25 @@ async function renderCase() {
   });
   const caliberRows = [...caliberGroups.values()].map(group => `<tr><td>${escapeHtml(group.type)}</td><td>${escapeHtml(group.objects.join("、"))}</td><td><strong>${escapeHtml(group.canonical)}</strong></td><td>${escapeHtml(group.rule)}</td></tr>`).join("");
   document.getElementById("tab-caliber").innerHTML = caliberRows ? `<table class="caliber-table"><thead><tr><th>类型</th><th>对齐对象</th><th>统一格式 / 单位</th><th>口径规则</th></tr></thead><tbody>${caliberRows}</tbody></table>` : '<p class="empty">本题没有需要转换的维度或单位</p>';
-  document.getElementById("tab-logs").innerHTML = `<div class="log-columns">
-    <section><h3>智能体运行</h3>${infoRows([["轮次", result.turn_index], ["回答状态", result.completion_status], ["首段回答", duration(timing.first_answer_ms)], ["完整响应", duration(timing.completed_ms)], ["传输总耗时", duration(timing.transport_total_ms ?? result.agent_latency_ms)], ["开始（北京时间）", localTime(timing.started_at)], ["结束（北京时间）", localTime(timing.finished_at)], ["重试次数", result.retries || 0]])}
-    <details><summary>智能体事件与错误</summary><pre>${escapeHtml(JSON.stringify({events: resp.event_counts, error: errorText(resp.error), remote_error: resp.remote_error}, null, 2))}</pre></details></section>
-    <section><h3>失败原因</h3>${infoRows([["未评分原因", result.not_scored_reason], ["错误类型", (result.error_types || []).join("、")], ["智能体错误", errorText(logs.agent_error)], ["SQL 错误", errorText(logs.sql_error)], ["记录重试", logs.retries]])}
-    ${(logs.exceptions || []).length ? `<details><summary>异常类型 · ${logs.exceptions.length}</summary><pre>${escapeHtml(JSON.stringify(logs.exceptions, null, 2))}</pre></details>` : ""}</section>
-    <section><h3>SQL 查询</h3>${infoRows([["查询状态", sql.error ? "失败" : sql.columns ? "完成" : "未执行"], ["查询耗时", sql.columns ? duration(sql.latency_ms) : "未记录"], ["结果行数", (sql.rows || []).length], ["补查次数", rechecks.length], ["查询错误", errorText(sql.error)]])}
-    ${(alignment.sql_attempts || []).length ? `<details><summary>时间回退记录</summary><pre>${escapeHtml(JSON.stringify(alignment.sql_attempts, null, 2))}</pre></details>` : ""}
+  const process = detail.process || null;
+  const review = process ? process.review : null;
+  document.getElementById("tab-logs").innerHTML = `
+    <section class="proc-part">
+      <h3 class="proc-part-title">一、智能体执行</h3>
+      <div class="proc-block"><h4>1. 智能体运行概览</h4>${agentOverview(result, timing, process)}</div>
+      <div class="proc-block"><h4>2. 执行时间轴</h4>${process ? processTimeline(process) : legacyEvents(resp)}</div>
+      <div class="proc-block"><h4>3. 执行结果</h4>${executionResult(result, resp, logs)}</div>
+      <div class="proc-block"><h4>4. 过程评测</h4>${processReviewPanel(review, Boolean(process))}</div>
     </section>
-    <section><h3>程序复核</h3>${reconciliationRows(alignment.reconciliation)}</section></div>`;
+    <section class="proc-part">
+      <h3 class="proc-part-title">二、SQL 查询与核验</h3>
+      <div class="log-columns">
+        <section><h3>SQL 查询</h3>${infoRows([["查询状态", sql.error ? "失败" : sql.columns ? "完成" : "未执行"], ["查询耗时", sql.columns ? duration(sql.latency_ms) : "未记录"], ["结果行数", (sql.rows || []).length], ["补查次数", rechecks.length], ["查询错误", errorText(sql.error)]])}
+        ${(alignment.sql_attempts || []).length ? `<details><summary>时间回退记录</summary><pre>${escapeHtml(JSON.stringify(alignment.sql_attempts, null, 2))}</pre></details>` : ""}
+        </section>
+        <section><h3>程序复核</h3>${reconciliationRows(alignment.reconciliation)}</section>
+      </div>
+    </section>`;
   document.querySelectorAll(".tabs button").forEach(btn => btn.addEventListener("click", () => {
     document.querySelectorAll(".tabs button").forEach(b => b.classList.remove("active"));
     document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));

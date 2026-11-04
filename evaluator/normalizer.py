@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Optional, Tuple
 
-from evaluator.models import MeasureSpec
+from evaluator.models import MeasureSpec, Tolerance
 
 EMPTY_TOKENS = {"", "--", "—", "–", "暂无", "无", "n/a", "na", "null", "none", "-", "nan"}
 # 数据库可能以科学计数法返回极小值（实测出现过 4.72e-05），数字需整体解析
@@ -118,6 +118,70 @@ def parse_number(
         if spec.unit == "%" and unit == "pp":
             return value, unit, "unit_conflict"
     return value, unit or (spec.unit if spec else ""), None
+
+
+DECIMALS_RE = re.compile(r"\d[\d,]*(?:\.(\d+))?")
+
+
+def decimals_of(text: object) -> int:
+    """答案里第一个数值的小数位数；0 表示整数写法。"""
+    match = DECIMALS_RE.search(str(text or ""))
+    if not match:
+        return 0
+    return len(match.group(1) or "")
+
+
+def _normalization_factor(text: object, spec: Optional[MeasureSpec]) -> float:
+    """答案原始书写 → 归一化数值的倍数，用于把「半个末位」换算到同一量纲。"""
+    raw = str(text or "")
+    factor = 1.0
+    _word, conversion = conversion_meta(raw, spec)
+    if conversion:
+        factor *= conversion
+    if spec is not None and spec.value_scale == "ratio01":
+        numeric = NUMBER_RE.search(raw)
+        has_unit_word = bool(re.search(r"[%％]|百分点|pp", raw, re.I))
+        if numeric and not has_unit_word and abs(float(numeric.group(0).replace(",", ""))) <= 1:
+            factor *= 100.0
+    return factor
+
+
+def precision_tolerance(text: object, spec: Optional[MeasureSpec]) -> float:
+    """按答案显示精度推导的容差：半个末位单位。"""
+    if spec is None:
+        return 0.0
+    decimals = decimals_of(text)
+    return 0.5 * (10.0 ** -decimals) * _normalization_factor(text, spec)
+
+
+def relaxed_tolerance(spec: Optional[MeasureSpec], expected: Optional[float], text: object, scale: float = 1.0):
+    """返回 (容差, 说明)。只放宽、不收紧，并限制放宽倍数避免放过真错值。"""
+    if spec is None:
+        return None, "无契约容差"
+    base = spec.tolerance
+    if base.kind == "exact" or spec.value_scale == "count":
+        return base, "按精确匹配"
+    precision = precision_tolerance(text, spec) * (scale if scale else 1.0)
+    if precision <= 0:
+        return base, "按契约容差"
+    magnitude = abs(expected) if expected is not None else 0.0
+    cap = 5.0 * (base.eps * magnitude if base.kind == "rel" else base.eps)
+    cap = max(cap, 5.0 * (base.abs_floor or 0.0), 1e-12)
+    relaxed = min(precision, cap)
+    if base.kind == "abs":
+        if relaxed <= base.eps:
+            return base, "按契约容差"
+        return (
+            Tolerance(kind="abs", eps=round(relaxed, 12), abs_floor=base.abs_floor),
+            f"按答案精度放宽到 ±{relaxed:g}",
+        )
+    floor = max(base.abs_floor or 0.0, relaxed)
+    if floor <= (base.abs_floor or 0.0):
+        return base, "按契约容差"
+    return (
+        Tolerance(kind="rel", eps=base.eps, abs_floor=round(floor, 12)),
+        f"按答案精度放宽绝对下限到 {floor:g}",
+    )
 
 
 def value_scale_rule(spec: Optional[MeasureSpec]) -> str:
