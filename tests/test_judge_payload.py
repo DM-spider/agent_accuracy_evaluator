@@ -124,6 +124,31 @@ def test_reconciliation_rescues_unevaluable_verdict():
     assert "程序复核" in artifact.evaluation.summary
 
 
+def test_row_coverage_counts_rows_not_values():
+    """6 行都在、数值全错：行覆盖应判一致，数值维度才判不一致。"""
+    report = {
+        "available": True,
+        "sql_rows": 6,
+        "answer_rows": 6,
+        "matched_rows": 6,
+        "checked_values": 11,
+        "hit_values": 0,
+        "row_hit_rate": 1.0,
+        "value_hit_rate": 0.0,
+        "coverage": 0.0,
+        "value_recall": 0.0,
+        "missing_rows": [],
+        "extra_rows": [],
+        "wrong_values": [{"key": "202602", "field": "x"}],
+        "missing_values": [],
+    }
+    artifact = apply_reconciliation(_contract(), _artifact(), report)
+    dims = artifact.evaluation.dimensions
+    assert dims["row_coverage"].status.value == "MATCH"
+    assert dims["numeric_accuracy"].status.value == "MISMATCH"
+    assert "6/6 行命中" in dims["row_coverage"].reason
+
+
 def test_reconciliation_is_blocked_by_caliber_veto():
     report = {
         "available": True,

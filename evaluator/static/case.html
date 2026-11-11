@@ -1,10 +1,10 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>题目详情</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261104c">
+  <link rel="stylesheet" href="/static/styles.css?v=20261106j">
 </head>
 <body>
   <header class="topbar">
@@ -26,6 +26,7 @@
         <button type="button" class="verdict-btn" data-verdict="UNEVALUABLE" id="verdict-unevaluable"><span class="verdict-stamp">平反</span><span class="verdict-btn-label">无法评估</span></button>
       </div>
     </div>
+    <section id="annotation-panel" class="annotation-panel" hidden></section>
     <p id="case-question"></p>
     <div class="evidence" id="evidence">
       <section class="pane">
@@ -42,16 +43,14 @@
         <button class="active" data-tab="diff">结果对比</button>
         <button data-tab="agent">智能体请求与返回</button>
         <button data-tab="sql">SQL 查询</button>
-        <button data-tab="caliber">数据口径对齐</button>
         <button data-tab="logs">执行记录</button>
       </div>
       <div class="tab-panel active" id="tab-diff"></div>
       <div class="tab-panel" id="tab-agent"></div>
       <div class="tab-panel" id="tab-sql"></div>
-      <div class="tab-panel" id="tab-caliber"></div>
       <div class="tab-panel" id="tab-logs"></div>
     </div>
   </main>
-  <script src="/static/app.js?v=20261104b"></script>
+  <script src="/static/app.js?v=20261106j"></script>
 </body>
 </html>

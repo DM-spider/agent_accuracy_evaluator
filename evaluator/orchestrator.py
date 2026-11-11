@@ -430,6 +430,13 @@ class Orchestrator:
         result.completion_status = agent_answer.completion_status if agent_answer else "not_sent"
         result.agent_timings = agent_answer.timings if agent_answer else {}
         result.alignment = alignment
+        process_payload = build_process(agent_answer) if agent_answer else None
+        if process_payload:
+            from evaluator.process_narrative import narrate, needs_narrative
+            if needs_narrative(process_payload):
+                narrative = narrate(self.llm_evaluator, process_payload, result.question)
+                if narrative:
+                    process_payload["narrative"] = narrative
         self.repo.save_case(
             run_context.run_id,
             result,
@@ -437,6 +444,6 @@ class Orchestrator:
             agent_raw=_agent_raw(agent_answer),
             sql_payload=sql_snapshot.model_dump(mode="json") if sql_snapshot else None,
             logs=logs,
-            process_payload=build_process(agent_answer) if agent_answer else None,
+            process_payload=process_payload,
         )
         return result

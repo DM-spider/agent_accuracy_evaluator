@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import codecs
 import re
+import threading
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -107,7 +108,8 @@ class StreamAgentClient:
     def __init__(self, *, session_id: str, task_id: str, template_id: str, org_id: str,
                  login_session: str, task_name: str = "leakage-skill", url: str = STREAM_URL,
                  origin: str = "", referer: str = "", payload: dict | None = None,
-                 read_timeout: float = 60, total_timeout: float = 300, retries: int = 0,
+                 read_timeout: float = 60, total_timeout: float = 300, headers_timeout: float = 60,
+                 retries: int = 0,
                  retry_backoff_seconds: float = 5.0, trust_env: bool = False, transport=None):
         self.url = url or STREAM_URL
         # 同源头随地址走：平台换域名时这里自动跟随，避免 Origin/Referer 与目标站点不一致被拒。
@@ -123,6 +125,8 @@ class StreamAgentClient:
         self.task_name = task_name
         self.read_timeout = read_timeout
         self.total_timeout = total_timeout
+        # 等响应头的独立上限：平台没动静时不要用读超时干等十分钟。
+        self.headers_timeout = headers_timeout
         # 只有平台明确回终态失败才重发；断流时服务端可能仍在跑，重发会被排队成新的一轮。
         self.retries = max(0, int(retries or 0))
         self.retry_backoff_seconds = max(0.0, float(retry_backoff_seconds or 0))
@@ -187,11 +191,31 @@ class StreamAgentClient:
         response_id = None
         total_bytes = 0
         remote_error = {}
+        header_timer = None
+        headers_timeout_hit = False
+        client = None
         try:
             timeout = httpx.Timeout(self.read_timeout, connect=15)
-            with httpx.Client(timeout=timeout, transport=self.transport, follow_redirects=False, trust_env=self.trust_env) as client:
+            client = httpx.Client(timeout=timeout, transport=self.transport, follow_redirects=False, trust_env=self.trust_env)
+
+            def _abort_without_headers():
+                nonlocal headers_timeout_hit
+                if timings["headers_ms"] is not None:
+                    return
+                headers_timeout_hit = True
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+            header_timer = threading.Timer(self.headers_timeout, _abort_without_headers)
+            header_timer.daemon = True
+            header_timer.start()
+            with client:
                 with client.stream("POST", self.url, json=body, headers=headers) as response:
                     timings["headers_ms"] = elapsed()
+                    if header_timer is not None:
+                        header_timer.cancel()
                     answer.http_status = response.status_code
                     response.raise_for_status()
                     if "text/event-stream" not in response.headers.get("content-type", "").lower():
@@ -273,13 +297,21 @@ class StreamAgentClient:
                     else:
                         answer.error = "STREAM_EOF_WITHOUT_COMPLETION"
         except Exception as exc:
-            # Exception strings / tool payloads can contain credentials or internal reasoning.
-            answer.error = f"STREAM_ERROR:{type(exc).__name__}"
-            if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
-                answer.completion_status = "not_sent"
-            if isinstance(exc, ValueError) and str(exc).isupper():
-                answer.error += ":" + str(exc)
+            if headers_timeout_hit:
+                # 平台连响应头都没回：任务大概率没创建，不要把读超时等满。
+                answer.error = "STREAM_ERROR:NoResponseHeaders"
+                answer.completion_status = "unknown"
+                timings["headers_timeout_hit"] = True
+            else:
+                # Exception strings / tool payloads can contain credentials or internal reasoning.
+                answer.error = f"STREAM_ERROR:{type(exc).__name__}"
+                if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+                    answer.completion_status = "not_sent"
+                if isinstance(exc, ValueError) and str(exc).isupper():
+                    answer.error += ":" + str(exc)
         finally:
+            if header_timer is not None:
+                header_timer.cancel()
             if not answer.text:
                 answer.text = "\n".join(text_parts[k] for k in sorted(text_parts))
             answer.latency_ms = int(elapsed())

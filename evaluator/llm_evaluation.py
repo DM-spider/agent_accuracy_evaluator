@@ -415,17 +415,19 @@ def apply_reconciliation(
             notes.append("程序复核未覆盖语义层判定的期间/粒度/单位/口径问题，保留 LLM 结论")
             return artifact.model_copy(update={"validation_notes": notes})
 
-    row_rate = report.get("coverage")
+    # 行覆盖只看基准行有没有出现在回答里，与数值对错无关；数值覆盖由 numeric_accuracy 承担。
+    row_rate = report.get("row_hit_rate")
     if row_rate is None:
-        row_rate = report.get("row_hit_rate")
+        row_rate = report.get("coverage")
     value_rate = report.get("value_recall")
     if value_rate is None:
         value_rate = report.get("value_hit_rate")
     dims = dict(evaluation.dimensions)
+    missing_rows = report.get("missing_rows") or []
     dims["row_coverage"] = DimensionEvaluation(
         status=_rate_status(row_rate, 0.5),
         reason=f"程序核对：{report.get('matched_rows', 0)}/{report.get('sql_rows', 0)} 行命中"
-               + (f"，基准值覆盖 {report.get('coverage')}" if report.get("coverage") is not None else ""),
+               + (f"，缺 {len(missing_rows)} 行" if missing_rows else ""),
     )
     if value_rate is not None:
         dims["numeric_accuracy"] = DimensionEvaluation(

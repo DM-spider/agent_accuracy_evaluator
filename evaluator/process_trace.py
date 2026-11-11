@@ -159,9 +159,14 @@ def _output_text(item: Dict[str, Any]) -> tuple:
     return str(item.get("output") or ""), {}
 
 
+def _row_counts(text: str) -> List[int]:
+    return [int(match.group(1)) for match in ROW_COUNT_RE.finditer(text or "")]
+
+
 def _row_count(text: str) -> Optional[int]:
-    match = ROW_COUNT_RE.search(text or "")
-    return int(match.group(1)) if match else None
+    """一次调用可能连续试多个参数：取所有行数的最大值，避免第一个 0 行掩盖后面的成功。"""
+    counts = _row_counts(text)
+    return max(counts) if counts else None
 
 
 def _outcome(details: Dict[str, Any], text: str) -> str:
@@ -176,10 +181,10 @@ def _outcome(details: Dict[str, Any], text: str) -> str:
         code = str(payload.get("respCode") or "").upper()
         if code and code != "SUCCESS":
             return "error"
-    rows = _row_count(text)
-    if rows == 0:
-        return "empty"
-    if NO_DATA_RE.search(text or "") and rows in (None, 0):
+    counts = _row_counts(text)
+    if counts:
+        return "empty" if all(count == 0 for count in counts) else "ok"
+    if NO_DATA_RE.search(text or ""):
         return "empty"
     return "ok"
 
@@ -233,13 +238,36 @@ def _apply_output(step: Dict[str, Any], item: Dict[str, Any], t_ms: float) -> No
 def build_process(answer: Any) -> Dict[str, Any]:
     """把一次问答的中间条目归一化成时间轴与过程统计。"""
     body = getattr(answer, "response_body", None) or {}
-    entries: Sequence[Dict[str, Any]] = body.get("process") or []
+    timings = dict(getattr(answer, "timings", None) or {})
+    if not timings.get("transport_total_ms"):
+        timings["transport_total_ms"] = getattr(answer, "latency_ms", None)
+    return build_process_from_entries(
+        body.get("process") or [],
+        case_id=str(getattr(answer, "case_id", "") or ""),
+        timings=timings,
+        completion_status=str(getattr(answer, "completion_status", "") or ""),
+        error=str(getattr(answer, "error", "") or ""),
+        answer_text=str(getattr(answer, "text", "") or ""),
+        truncated=bool(body.get("process_truncated")),
+    )
+
+
+def build_process_from_entries(
+    entries: Sequence[Dict[str, Any]],
+    *,
+    case_id: str = "",
+    timings: Optional[Dict[str, Any]] = None,
+    completion_status: str = "",
+    error: str = "",
+    answer_text: str = "",
+    truncated: bool = False,
+) -> Dict[str, Any]:
+    """同一套归一化逻辑，直接吃原始条目——回填旧存档时用。"""
     steps: List[Dict[str, Any]] = []
     thoughts: List[Dict[str, Any]] = []
     notes: List[Dict[str, Any]] = []
     events: List[Dict[str, Any]] = []
     pending: Dict[str, Dict[str, Any]] = {}
-    truncated = bool(body.get("process_truncated"))
 
     for entry in entries:
         kind = str(entry.get("kind") or "")
@@ -291,16 +319,16 @@ def build_process(answer: Any) -> Dict[str, Any]:
         if first_tool_ms is None and step.get("t_ms") is not None:
             first_tool_ms = step["t_ms"]
 
-    timings = getattr(answer, "timings", None) or {}
+    timings = timings or {}
     summary = {
         "steps": len(steps),
         "thoughts": len(thoughts),
         "notes": len(notes),
         "counts": counts,
         "first_tool_ms": first_tool_ms,
-        "total_ms": timings.get("transport_total_ms") or getattr(answer, "latency_ms", None),
-        "completion_status": getattr(answer, "completion_status", ""),
-        "error": getattr(answer, "error", None),
+        "total_ms": timings.get("transport_total_ms"),
+        "completion_status": completion_status,
+        "error": error or None,
     }
 
     timeline: List[Dict[str, Any]] = []
@@ -330,7 +358,7 @@ def build_process(answer: Any) -> Dict[str, Any]:
 
     return {
         "schema_version": "v1",
-        "case_id": getattr(answer, "case_id", ""),
+        "case_id": case_id,
         "summary": summary,
         "counts": counts,
         "flags": flags,
@@ -338,9 +366,9 @@ def build_process(answer: Any) -> Dict[str, Any]:
             summary=summary,
             counts=counts,
             steps=steps,
-            completion_status=str(getattr(answer, "completion_status", "") or ""),
-            error=str(getattr(answer, "error", "") or ""),
-            answer_text=str(getattr(answer, "text", "") or ""),
+            completion_status=str(completion_status or ""),
+            error=str(error or ""),
+            answer_text=str(answer_text or ""),
         ),
         "timeline": timeline[: MAX_STEPS * 2],
         "steps": steps[:MAX_STEPS],

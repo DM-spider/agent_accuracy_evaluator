@@ -55,6 +55,15 @@ def test_parse_direct_cli_and_heredoc_invoke():
     ]
 
 
+def test_multiple_probes_use_max_rows_and_any_success_is_ok():
+    from evaluator.process_trace import _outcome, _row_count
+
+    mixed = "bz_bm empty -> totalRows: 0 | bz_bm futian -> totalRows: 4634"
+    assert _row_count(mixed) == 4634
+    assert _outcome({}, mixed) == "ok"
+    assert _outcome({}, "a -> totalRows: 0 b -> totalRows: 0") == "empty"
+
+
 def test_step_carries_code_params_and_status():
     entries = [
         _call("year_missed_rate"),
@@ -70,7 +79,9 @@ def test_step_carries_code_params_and_status():
     assert step["status"] == "empty"
     assert step["rows"] == 0
     assert process["review"]["stats"]["tool_calls"] == 1
-    assert "EMPTY_RESULT_HIGH" in [item["code"] for item in process["review"]["findings"]]
+    # 只查一次就为空，无法判断是参数问题还是业务无数据：只作为观察，不算过程问题。
+    assert process["review"]["findings"] == []
+    assert process["review"]["observations"]
 
 
 def test_timeout_is_distinguished_from_error():

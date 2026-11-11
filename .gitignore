@@ -38,3 +38,5 @@ Desktop.ini
 # cli 返回结果
 golden_db/
 results.json
+
+/temp

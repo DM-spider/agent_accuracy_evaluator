@@ -10,6 +10,7 @@ from openpyxl import Workbook
 
 from evaluator.contract_loader import load_contracts
 from evaluator.evaluation_metrics import run_evaluation_metrics
+from evaluator.process_review import review_from_process
 from evaluator.repository import Repository
 
 
@@ -122,6 +123,41 @@ def export_xlsx(repo: Repository, run_id: str, dest: Path) -> Path:
                 recheck_ws.append([item["case_id"], snapshot.get("finished_at"), snapshot.get("note"),
                                    json.dumps(snapshot.get("params", {}), ensure_ascii=False), snapshot.get("executed_sql"),
                                    snapshot.get("latency_ms"), snapshot.get("error"), json.dumps(row, ensure_ascii=False)])
+    process_ws = wb.create_sheet("过程评测")
+    process_ws.append(["题号", "过程结论", "调用次数", "空结果", "失败", "超时", "过程回顾", "过程观察", "过程问题"])
+    verdict_labels = {
+        "PROCESS_HEALTHY": "过程正常",
+        "PROCESS_ATTENTION": "建议关注",
+        "PROCESS_RISK": "存在明显问题",
+        "PROCESS_UNKNOWN": "证据不足",
+    }
+    for item in repo.list_cases(run_id):
+        detail = repo.load_case_detail(run_id, item["case_id"]) or {}
+        process = detail.get("process") or {}
+        if not process:
+            continue
+        review = review_from_process(
+            process,
+            str((detail.get("agent_answer") or {}).get("text") or ""),
+            (detail.get("result") or {}).get("agent_timings") or {},
+        )
+        stats = review.get("stats") or {}
+        process_ws.append(
+            [
+                item["case_id"],
+                verdict_labels.get(review.get("verdict"), review.get("verdict")),
+                stats.get("tool_calls"),
+                stats.get("empty"),
+                stats.get("errors"),
+                stats.get("timeouts"),
+                "；".join((process.get("narrative") or {}).get("walk") or []),
+                "；".join(review.get("observations") or []),
+                "；".join(
+                    f"{finding.get('severity_label', '')}·{finding.get('title', '')}"
+                    for finding in review.get("findings") or []
+                ),
+            ]
+        )
     for sheet in wb:
         sheet.freeze_panes = "A2"
         sheet.auto_filter.ref = sheet.dimensions

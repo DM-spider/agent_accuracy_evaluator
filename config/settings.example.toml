@@ -69,6 +69,8 @@ curl = '''
 '''
 enabled = true
 read_timeout_seconds = 180
+# 等响应头的独立上限：平台连第一行响应都不回时，不要用读超时干等。
+headers_timeout_seconds = 60
 total_timeout_seconds = 600
 # 平台明确返回 response.failed 等终态失败时重发整轮，两次尝试之间等这么多秒。
 # 断流（没收到 response.completed）不重发：那轮可能仍在服务端执行。

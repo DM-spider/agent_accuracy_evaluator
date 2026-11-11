@@ -252,14 +252,15 @@ function renderLlmDiff(evaluation, judgment) {
     const dimension = dimensions[key] || {};
     const status = dimension.status || "UNKNOWN";
     const count = items.filter(item => differenceDimension(item.type) === key).length;
-    return `<button type="button" class="llm-dim" data-diff-dimension="${key}" aria-pressed="false"><span class="llm-dim-name">${escapeHtml(label)}</span><span class="llm-dim-status ${escapeHtml(status)}">${escapeHtml(dimensionStatusLabels[status] || status)}</span><span class="llm-dim-reason">${escapeHtml(dimension.reason || "未记录核验说明")}</span><span class="llm-dim-count">${count ? `${count} 项差异 · 查看明细` : "查看核验说明"}</span></button>`;
+    return `<button type="button" class="llm-dim-cell status-${escapeHtml(status)}" data-diff-dimension="${key}" data-status="${escapeHtml(status)}" data-reason="${escapeHtml(dimension.reason || "未记录核验说明")}" aria-pressed="false"><span class="llm-dim-name">${escapeHtml(label)}</span><span class="llm-dim-status ${escapeHtml(status)}">${escapeHtml(dimensionStatusLabels[status] || status)}</span>${count ? `<span class="llm-dim-badge">${count} 项差异</span>` : ""}</button>`;
   }).join("");
   const differences = items.map(item => {
     const coordinate = Object.entries(item.coordinate || {}).map(([key, value]) => `${key}：${value}`).join(" · ") || "—";
     const {delta, ratio} = comparisonDelta(item);
     const signed = value => value === null ? "—" : `${value > 0 ? "+" : ""}${comparisonValue(value)}`;
     const evidence = item.evidence && item.evidence !== item.explanation ? `<details class="llm-evidence"><summary>查看证据</summary><p>${escapeHtml(item.evidence)}</p></details>` : "";
-    return `<tr data-dimension="${differenceDimension(item.type)}" data-ratio="${ratio === null ? "" : Math.abs(ratio)}"><td><span class="llm-issue ${item.severity === "ERROR" ? "error" : "warning"}">${escapeHtml(issueTypeLabels[item.type] || item.type)}</span><small>${item.severity === "ERROR" ? "错误" : "需复核"}</small></td><td>${escapeHtml(coordinate)}</td><td>${escapeHtml(item.field || "—")}</td><td class="llm-number">${escapeHtml(comparisonValue(item.agent_value))}</td><td class="llm-number">${escapeHtml(comparisonValue(item.sql_value))}</td><td class="llm-number">${escapeHtml(signed(delta))}</td><td class="llm-number">${ratio === null ? "—" : `${ratio > 0 ? "+" : ""}${(ratio * 100).toFixed(1)}%`}</td><td>${escapeHtml(item.explanation || (item.evidence ? "见核验证据" : "未记录说明"))}${evidence}</td></tr>`;
+    const numberClass = value => (typeof value === "number" ? "llm-number" : "");
+    return `<tr data-dimension="${differenceDimension(item.type)}" data-ratio="${ratio === null ? "" : Math.abs(ratio)}"><td><span class="llm-issue ${item.severity === "ERROR" ? "error" : "warning"}">${escapeHtml(issueTypeLabels[item.type] || item.type)}</span><small>${item.severity === "ERROR" ? "错误" : "需复核"}</small></td><td>${escapeHtml(coordinate)}</td><td>${escapeHtml(item.field || "—")}</td><td class="${numberClass(item.agent_value)}">${escapeHtml(comparisonValue(item.agent_value))}</td><td class="${numberClass(item.sql_value)}">${escapeHtml(comparisonValue(item.sql_value))}</td><td class="llm-number">${escapeHtml(signed(delta))}</td><td class="llm-number">${ratio === null ? "—" : `${ratio > 0 ? "+" : ""}${(ratio * 100).toFixed(1)}%`}</td><td>${escapeHtml(item.explanation || (item.evidence ? "见核验证据" : "未记录说明"))}${evidence}</td></tr>`;
   }).join("");
   const meta = [artifact.model, artifact.prompt_version, localTime(artifact.created_at), artifact.latency_ms ? compactDuration(artifact.latency_ms) : ""].filter(Boolean).join(" · ");
   return `<section class="llm-overall"><div class="llm-verdict-line">
@@ -270,7 +271,8 @@ function renderLlmDiff(evaluation, judgment) {
       <p class="llm-summary">${escapeHtml(data.summary || "无结论说明")}</p>
       ${overridden ? `<p class="llm-meta">已人工调整结论；以下维度和差异保留自动评估记录。</p>` : ""}
     </section>
-    <h3 class="llm-section-title">检查维度</h3><div class="llm-dimensions">${dimensionRows}</div>
+    <h3 class="llm-section-title">检查维度</h3><div class="llm-dim-strip">${dimensionRows}</div>
+    <p class="llm-dim-note" data-dim-note hidden></p>
     <section class="llm-detail-section"><div class="llm-detail-heading"><h3 class="llm-section-title">差异明细 <span data-diff-count>${items.length} 项</span></h3><button type="button" class="btn ghost" data-diff-reset>查看全部</button><label>排序 <select data-diff-sort><option value="original">原始顺序</option><option value="ratio">差异率从高到低</option></select></label></div>
     <p class="llm-detail-note" data-diff-note>差值 = 标准化回答值 − 标准化基准值；差异率 = 差值 / 基准值绝对值。未完成标准化或基准为零时，相关结果显示“—”。</p>
     ${differences.length
@@ -282,23 +284,46 @@ function renderLlmDiff(evaluation, judgment) {
 
 function bindLlmDiff(panel) {
   const rows = [...panel.querySelectorAll(".llm-differences tbody tr")];
-  const cards = [...panel.querySelectorAll("[data-diff-dimension]")];
-  const note = panel.querySelector("[data-diff-note]");
-  if (!note) return;
-  const originalNote = note.textContent;
+  const cells = [...panel.querySelectorAll("[data-diff-dimension]")];
+  const diffNote = panel.querySelector("[data-diff-note]");
+  const dimNote = panel.querySelector("[data-dim-note]");
+  const tableWrap = panel.querySelector(".llm-table-scroll");
+  const countLabel = panel.querySelector("[data-diff-count]");
+  if (!diffNote) return;
+  if (tableWrap && rows.length === 0) tableWrap.hidden = true;
+  if (rows.length === 0) diffNote.hidden = true;
   const filter = key => {
-    cards.forEach(card => card.setAttribute("aria-pressed", String(card.dataset.diffDimension === key)));
+    cells.forEach(cell => cell.setAttribute("aria-pressed", String(cell.dataset.diffDimension === key)));
     rows.forEach(row => { row.hidden = Boolean(key) && row.dataset.dimension !== key; });
     const visible = rows.filter(row => !row.hidden).length;
-    panel.querySelector("[data-diff-count]").textContent = `${visible} 项${key ? ` / 全部 ${rows.length} 项` : ""}`;
-    note.textContent = key ? `${dimensionLabels[key]}：${cards.find(card => card.dataset.diffDimension === key).querySelector(".llm-dim-reason").textContent}` : originalNote;
+    const activeCell = key ? cells.find(item => item.dataset.diffDimension === key) : null;
+    const status = activeCell ? activeCell.dataset.status : "";
+    countLabel.textContent = key
+      ? (visible ? `${visible} 项 / 全部 ${rows.length} 项` : `无逐项差异（全部 ${rows.length} 项）`)
+      : `${visible} 项`;
+    if (dimNote) {
+      dimNote.hidden = !activeCell;
+      dimNote.textContent = activeCell ? `${dimensionLabels[key]}：${activeCell.dataset.reason || "未记录核验说明"}` : "";
+      dimNote.className = "llm-dim-note" + (activeCell ? ` status-${status}` : "");
+    }
+    if (tableWrap) tableWrap.hidden = visible === 0;
+    diffNote.hidden = visible === 0;
     const empty = panel.querySelector("[data-diff-empty]");
     empty.hidden = visible > 0;
-    if (key) empty.textContent = "此维度未记录差异明细，核验说明见上方。";
-    else empty.textContent = "未记录差异明细，请结合总体结论与维度说明判断。";
+    if (visible > 0) return;
+    if (!key || !activeCell) {
+      empty.textContent = "未记录差异明细，请结合总体结论与维度说明判断。";
+      return;
+    }
+    const flag = `<span class="llm-diff-flag ${escapeHtml(status)}">${escapeHtml(dimensionLabels[key])} · ${escapeHtml(dimensionStatusLabels[status] || status)}</span>`;
+    empty.innerHTML = status === "MATCH"
+      ? `${flag}该维度判定为一致，没有逐项差异。`
+      : `${flag}评估未记录该维度的逐项差异，判定依据见上方核验说明。`;
   };
-  cards.forEach(card => card.addEventListener("click", () => filter(card.getAttribute("aria-pressed") === "true" ? "" : card.dataset.diffDimension)));
+  cells.forEach(cell => cell.addEventListener("click", () => filter(cell.getAttribute("aria-pressed") === "true" ? "" : cell.dataset.diffDimension)));
   panel.querySelector("[data-diff-reset]").addEventListener("click", () => filter(""));
+  const hashKey = (location.hash.match(/^#dim-(.+)$/) || [])[1];
+  if (hashKey && cells.some(item => item.dataset.diffDimension === hashKey)) filter(hashKey);
   panel.querySelector("[data-diff-sort]").addEventListener("change", event => {
     const ordered = event.target.value === "ratio" ? [...rows].sort((a, b) => (b.dataset.ratio === "" ? -1 : Number(b.dataset.ratio)) - (a.dataset.ratio === "" ? -1 : Number(a.dataset.ratio))) : rows;
     ordered.forEach(row => row.parentNode.appendChild(row));
@@ -577,7 +602,7 @@ function executionResult(result, resp, logs) {
 }
 
 // 过程评测：指出问题、给出建议。没有过程数据时明确说明无法评测。
-function processReviewPanel(review, hasProcess) {
+function processReviewPanel(review, hasProcess, narrative) {
   if (!hasProcess) return '<p class="empty">本题没有过程数据，无法评估执行过程。</p>';
   if (!review) return '<p class="empty">本题没有生成过程评测。</p>';
   const labels = {
@@ -586,12 +611,22 @@ function processReviewPanel(review, hasProcess) {
     PROCESS_RISK: "存在明显过程问题",
     PROCESS_UNKNOWN: "过程证据不足，暂不评价",
   };
-  const findings = (review.findings || []).map(item => `<li class="proc-finding sev-${escapeHtml(String(item.severity || "LOW").toLowerCase())}">
-      <div class="proc-finding-head"><span class="proc-sev">${escapeHtml(item.severity === "HIGH" ? "高" : item.severity === "MEDIUM" ? "中" : "低")}</span><strong>${escapeHtml(item.title || "")}</strong></div>
-      <p>${escapeHtml(item.detail || "")}</p></li>`).join("");
+  const severityLabels = { HIGH: "需要处理", MEDIUM: "建议关注", LOW: "提示" };
+  const findings = (review.findings || []).map(item => {
+    const severity = String(item.severity || "LOW").toUpperCase();
+    const evidence = (item.evidence || []).map(line => `<li>${escapeHtml(line)}</li>`).join("");
+    return `<li class="proc-finding sev-${escapeHtml(severity.toLowerCase())}">
+      <div class="proc-finding-head"><span class="proc-sev">${escapeHtml(severityLabels[severity] || severity)}</span><strong>${escapeHtml(item.title || "")}</strong></div>
+      <p>${escapeHtml(item.detail || "")}</p>
+      ${evidence ? `<ul class="proc-evidence">${evidence}</ul>` : ""}</li>`;
+  }).join("");
+  const observations = (review.observations || []).map(text => `<li>${escapeHtml(text)}</li>`).join("");
+  const walk = (narrative && Array.isArray(narrative.walk) ? narrative.walk : []).map(line => `<li>${escapeHtml(line)}</li>`).join("");
   const suggestions = (review.suggestions || []).map(text => `<li>${escapeHtml(text)}</li>`).join("");
   return `<p class="proc-verdict verdict-${escapeHtml(String(review.verdict || "").toLowerCase())}">${escapeHtml(labels[review.verdict] || review.verdict || "")}</p>
+    ${walk ? `<div class="proc-walk"><h4>过程回顾</h4><ol>${walk}</ol></div>` : ""}
     ${findings ? `<ul class="proc-findings">${findings}</ul>` : ""}
+    ${observations ? `<div class="proc-observations"><h4>过程观察</h4><ul>${observations}</ul></div>` : ""}
     ${suggestions ? `<div class="proc-suggest"><h4>建议</h4><ul>${suggestions}</ul></div>` : ""}`;
 }
 
@@ -666,6 +701,146 @@ async function renderCaseTable(runId) {
   box.querySelectorAll("tr.clickable").forEach(tr => tr.addEventListener("click", () => location.href = `/runs/${runId}/cases/${tr.dataset.id}`));
 }
 
+/* ===== 平反说明（append-only CSV，不建库表） ===== */
+const annotationReasons = [
+  ["EXTRACT_MISS", "抽取没抓到"],
+  ["THRESHOLD_STRICT", "判定太严"],
+  ["LLM_MISJUDGE", "LLM 判错"],
+  ["CONTRACT_WRONG", "契约或基准错"],
+  ["SCOPE_MISS", "范围理解错"],
+  ["OTHER", "其他"]
+];
+
+function annotationMismatchDims(judgment) {
+  const dims = (judgment || {}).dimensions || {};
+  return Object.keys(dimensionLabels).filter(key => (dims[key] || {}).status === "MISMATCH");
+}
+
+function annotationChips(selected) {
+  return Object.entries(dimensionLabels).map(([key, label]) => {
+    const on = selected.includes(key);
+    return `<label class="annotation-chip${on ? " is-on" : ""}" data-dimension="${key}">
+      <input type="checkbox" value="${key}"${on ? " checked" : ""}>${label}
+    </label>`;
+  }).join("");
+}
+
+function annotationHistory(rows) {
+  if (!rows.length) return '<p class="annotation-empty">还没有记录平反原因。</p>';
+  return `<h4>平反历史</h4>${rows.map(row => `
+    <div class="annotation-entry">
+      <time>${escapeHtml(localTime(row.created_at))}</time>
+      <span>${escapeHtml(verdictLabel(row.auto_verdict))} <span class="annotation-arrow">→</span> <strong>${escapeHtml(verdictLabel(row.manual_verdict))}</strong></span>
+      <span class="annotation-reason">${escapeHtml(row.reason_label || row.reason_code || "")}</span>
+      ${(row.dimensions || []).length ? `<span class="annotation-dims">${row.dimensions.map(key => escapeHtml(dimensionLabels[key] || key)).join("、")}</span>` : ""}
+      ${row.note ? `<span class="annotation-note">${escapeHtml(row.note)}</span>` : ""}
+      ${row.annotator ? `<span class="annotation-by">${escapeHtml(row.annotator)}</span>` : ""}
+    </div>`).join("")}`;
+}
+
+async function loadCaseAnnotations(runId, caseId) {
+  try {
+    const data = await api(`/api/runs/${runId}/cases/${caseId}/annotations`);
+    return data.annotations || [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function renderAnnotationPanel(runId, caseId, judgment, rows) {
+  const panel = document.getElementById("annotation-panel");
+  if (!panel) return;
+  const auto = judgment.auto_verdict || "";
+  const manual = judgment.manual_verdict || "";
+  if (!manual || manual === auto) {
+    panel.hidden = true;
+    panel.innerHTML = "";
+    return;
+  }
+  const latest = rows[0] || null;
+  panel.hidden = false;
+  panel.innerHTML = `
+    <div class="annotation-bar">
+      <span class="annotation-kicker">平反说明</span>
+      <span class="annotation-summary">自动结论 <span class="result-tag ${escapeHtml(auto)}">${escapeHtml(verdictLabel(auto))}</span>
+        <span class="annotation-arrow">→</span> 现结论 <span class="result-tag ${escapeHtml(manual)}">${escapeHtml(verdictLabel(manual))}</span></span>
+      <span class="annotation-state${latest ? "" : " pending"}">${latest ? `已说明：${escapeHtml(latest.reason_label || latest.reason_code || "")}` : "尚未说明原因"}</span>
+      <div class="annotation-bar-actions">
+        <button type="button" class="btn ghost" id="annotation-open">${latest ? "修改说明" : "补充说明"}</button>
+        <button type="button" class="btn ghost" id="annotation-collapse" hidden>收起</button>
+      </div>
+    </div>
+    <form class="annotation-form" id="annotation-form" hidden>
+      <div class="annotation-grid">
+        <label class="annotation-field"><span>归因</span>
+          <select id="annotation-reason">${annotationReasons.map(([value, label]) => `<option value="${value}"${latest && latest.reason_code === value ? " selected" : ""}>${label}</option>`).join("")}</select>
+        </label>
+        <label class="annotation-field"><span>涉及维度（可多选）</span>
+          <div class="annotation-chips" id="annotation-chips">${annotationChips(latest ? (latest.dimensions || []) : annotationMismatchDims(judgment))}</div>
+        </label>
+        <label class="annotation-field annotation-field-wide"><span>一句话理由</span>
+          <input id="annotation-note" maxlength="200" autocomplete="off" placeholder="例如：缺的 23 个值不在题目点名范围内" value="${escapeHtml(latest ? latest.note : "")}">
+        </label>
+        <label class="annotation-field annotation-field-wide"><span>原文证据（选填）</span>
+          <input id="annotation-evidence" maxlength="300" autocomplete="off" placeholder="可粘贴回答里的原句" value="${escapeHtml(latest ? latest.evidence : "")}">
+        </label>
+      </div>
+      <div class="annotation-actions">
+        <button type="submit" class="btn" id="annotation-save">保存说明</button>
+        <button type="button" class="btn ghost" id="annotation-skip">暂不说明</button>
+        <span class="annotation-status" id="annotation-status" role="status"></span>
+      </div>
+    </form>
+    <div class="annotation-history">${annotationHistory(rows)}</div>`;
+  const form = panel.querySelector("#annotation-form");
+  const openBtn = panel.querySelector("#annotation-open");
+  const collapseBtn = panel.querySelector("#annotation-collapse");
+  const setOpen = (open) => {
+    form.hidden = !open;
+    openBtn.hidden = open;
+    collapseBtn.hidden = !open;
+  };
+  openBtn.onclick = () => setOpen(true);
+  collapseBtn.onclick = () => setOpen(false);
+  panel.querySelector("#annotation-skip").onclick = () => setOpen(false);
+  if (location.hash === "#annotation") setOpen(true);
+  panel.querySelectorAll(".annotation-chip").forEach(chip => {
+    chip.onclick = (event) => {
+      event.preventDefault();
+      const input = chip.querySelector("input");
+      input.checked = !input.checked;
+      chip.classList.toggle("is-on", input.checked);
+    };
+  });
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const status = panel.querySelector("#annotation-status");
+    const saveBtn = panel.querySelector("#annotation-save");
+    const dimensions = [...panel.querySelectorAll("#annotation-chips input:checked")].map(input => input.value);
+    saveBtn.disabled = true;
+    status.classList.remove("error");
+    status.textContent = "保存中";
+    try {
+      await api(`/api/runs/${runId}/cases/${caseId}/verdict`, {
+        method: "POST",
+        body: JSON.stringify({
+          verdict: manual,
+          reason_code: panel.querySelector("#annotation-reason").value,
+          dimensions,
+          note: panel.querySelector("#annotation-note").value.trim(),
+          evidence: panel.querySelector("#annotation-evidence").value.trim()
+        })
+      });
+      const refreshed = await loadCaseAnnotations(runId, caseId);
+      renderAnnotationPanel(runId, caseId, judgment, refreshed);
+    } catch (error) {
+      status.classList.add("error");
+      status.textContent = error.message;
+      saveBtn.disabled = false;
+    }
+  };
+}
+
 async function renderCase() {
   const runId = runIdFromPath();
   const caseId = caseIdFromPath();
@@ -680,6 +855,7 @@ async function renderCase() {
   document.getElementById("case-kicker").textContent = `${caseId} · ${result.scene_big || ""} · ${result.result_type || ""}${failureNote ? ` · ${failureNote}` : ""}`;
   document.getElementById("case-title").textContent = caseId;
   const judgment = detail.judgment || {};
+  let caseAnnotations = await loadCaseAnnotations(runId, caseId);
   document.getElementById("case-question").textContent = result.question || (detail.contract || {}).question || "";
   const agent = (detail.agent_answer || {}).text || "";
   const rechecks = detail.sql_rechecks || [];
@@ -737,19 +913,6 @@ async function renderCase() {
     } catch (error) { status.textContent = error.message; }
     finally { button.disabled = false; }
   };
-  const caliber = detail.caliber_alignment || {rules: [], rows: []};
-  const caliberGroups = new Map();
-  (caliber.rows || []).forEach(row => {
-    const type = row.kind === "dimension" ? "维度" : "指标";
-    const canonical = row.canonical_unit || row.unit || "原数值";
-    const rule = row.normalization_rule || row.rule || "按原值对齐";
-    const key = `${type}|${canonical}|${rule}`;
-    if (!caliberGroups.has(key)) caliberGroups.set(key, {type, canonical, rule, objects: []});
-    const group = caliberGroups.get(key);
-    if (!group.objects.includes(row.object)) group.objects.push(row.object);
-  });
-  const caliberRows = [...caliberGroups.values()].map(group => `<tr><td>${escapeHtml(group.type)}</td><td>${escapeHtml(group.objects.join("、"))}</td><td><strong>${escapeHtml(group.canonical)}</strong></td><td>${escapeHtml(group.rule)}</td></tr>`).join("");
-  document.getElementById("tab-caliber").innerHTML = caliberRows ? `<table class="caliber-table"><thead><tr><th>类型</th><th>对齐对象</th><th>统一格式 / 单位</th><th>口径规则</th></tr></thead><tbody>${caliberRows}</tbody></table>` : '<p class="empty">本题没有需要转换的维度或单位</p>';
   const process = detail.process || null;
   const review = process ? process.review : null;
   document.getElementById("tab-logs").innerHTML = `
@@ -758,7 +921,7 @@ async function renderCase() {
       <div class="proc-block"><h4>1. 智能体运行概览</h4>${agentOverview(result, timing, process)}</div>
       <div class="proc-block"><h4>2. 执行时间轴</h4>${process ? processTimeline(process) : legacyEvents(resp)}</div>
       <div class="proc-block"><h4>3. 执行结果</h4>${executionResult(result, resp, logs)}</div>
-      <div class="proc-block"><h4>4. 过程评测</h4>${processReviewPanel(review, Boolean(process))}</div>
+      <div class="proc-block"><h4>4. 过程评测</h4>${processReviewPanel(review, Boolean(process), process && process.narrative)}</div>
     </section>
     <section class="proc-part">
       <h3 class="proc-part-title">二、SQL 查询与核验</h3>
@@ -789,6 +952,7 @@ async function renderCase() {
     });
   };
   paintVerdict(judgment);
+  renderAnnotationPanel(runId, caseId, judgment, caseAnnotations);
   const saveVerdict = async (verdict) => {
     const chosen = verdict === judgment.auto_verdict ? null : verdict;
     const payload = await api(`/api/runs/${runId}/cases/${caseId}/verdict`, {
@@ -797,6 +961,8 @@ async function renderCase() {
     });
     Object.assign(judgment, payload.judgment || {});
     paintVerdict(judgment);
+    caseAnnotations = await loadCaseAnnotations(runId, caseId);
+    renderAnnotationPanel(runId, caseId, judgment, caseAnnotations);
   };
   document.querySelectorAll(".verdict-btn").forEach(btn => {
     btn.onclick = () => saveVerdict(btn.dataset.verdict);

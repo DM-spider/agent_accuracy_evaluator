@@ -11,6 +11,20 @@ from typing import Any, Dict, List, Optional
 from evaluator.models import CaseResult, LlmEvaluationArtifact, RunSummary
 from evaluator.paths import db_path as default_db_path, ensure_runtime, runs_dir as default_runs_dir
 
+
+def process_for_disk(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """process.json 只留展示所需的归一化结果。
+
+    steps/thoughts/notes 与 timeline 内容重复，trace 单独写 jsonl，
+    不重复落盘，避免详情接口每次读一份两倍大的文件。
+    """
+    data = dict(payload or {})
+    data.pop("trace", None)
+    for key in ("steps", "thoughts", "notes"):
+        data.pop(key, None)
+    return data
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS evaluation_runs (
     run_id TEXT PRIMARY KEY,
@@ -196,17 +210,11 @@ class Repository:
             )
 
     def _save_process(self, case_dir: Path, payload: Dict[str, Any]) -> None:
-        """过程明细单独落盘：原始轨迹写 jsonl，展示用归一化结果写 process.json。
-
-        steps/thoughts/notes 与 timeline 内容重复，只保留 timeline，避免详情接口
-        每次读一份两倍大的文件。
-        """
-        data = dict(payload)
-        trace = data.pop("trace", None) or []
-        for key in ("steps", "thoughts", "notes"):
-            data.pop(key, None)
+        """过程明细单独落盘：原始轨迹写 jsonl，展示用归一化结果写 process.json。"""
+        trace = payload.get("trace") or []
         (case_dir / "process.json").write_text(
-            json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+            json.dumps(process_for_disk(payload), ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
         )
         if trace:
             lines = [json.dumps(item, ensure_ascii=False, default=str) for item in trace]

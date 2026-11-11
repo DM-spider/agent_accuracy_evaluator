@@ -173,6 +173,7 @@ def client_from_settings(settings: Dict[str, Any]) -> AgentClient:
             payload=platform.get("payload") or {},
             read_timeout=float(platform.get("read_timeout_seconds", 60)),
             total_timeout=float(platform.get("total_timeout_seconds", 300)),
+            headers_timeout=float(platform.get("headers_timeout_seconds", 60)),
             retries=int(platform.get("retries") or 0),
             retry_backoff_seconds=float(platform.get("retry_backoff_seconds") or 5),
             trust_env=bool(platform.get("trust_env", False)),

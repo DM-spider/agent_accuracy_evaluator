@@ -149,6 +149,19 @@ class LlmEvaluator:
         data, notes = coerce_payload(data)
         return LlmEvaluationResult.model_validate(data), notes
 
+    def complete_json(self, messages: List[Dict[str, str]], *, max_tokens: Optional[int] = None) -> Dict[str, Any]:
+        """通用 JSON 补全，供过程回顾等非判分用途使用；输出被截断时扩大预算重试一次。"""
+        budget = int(max_tokens or self.max_output_tokens)
+        for attempt in range(2):
+            payload = self._request(messages, max_tokens=budget)
+            try:
+                return json.loads(_strip_code_fence(self._extract_content(payload)))
+            except _Truncated:
+                if attempt == 0:
+                    budget = min(max(budget * 2, 1600), 4000)
+                    continue
+                raise
+
     def _invalid_artifact(self, evidence, error: str, latency_ms: int, usage: Dict[str, int], content: str):
         return LlmEvaluationArtifact(
             evaluation=unevaluable_result("LLM_RESPONSE_INVALID", "评估 LLM 返回非法结构"),

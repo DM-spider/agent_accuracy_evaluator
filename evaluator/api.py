@@ -24,7 +24,7 @@ from evaluator.settings import db_password, load_settings, platform_login_sessio
 from evaluator.sql_executor import SqlExecutor, make_pg_connector
 from evaluator.session_guard import SessionGuard
 from evaluator.models import RunSummary, RunStatus
-from evaluator.verdict import headline_from_metrics, normalize_manual_verdict, parse_threshold
+from evaluator.verdict import case_judgment, headline_from_metrics, normalize_manual_verdict, parse_threshold
 
 router = APIRouter()
 _STATE: Dict[str, Any] = {}
@@ -369,31 +369,6 @@ def list_cases(
     return {"cases": out}
 
 
-def _caliber_alignment(contract) -> Dict[str, Any]:
-    """数据口径对齐页签的展示数据：只陈述契约单位与归一规则，不包含比较结果。"""
-    from evaluator.normalizer import tolerance_rule, value_scale_rule
-
-    rows = []
-    for dim in contract.row_key or []:
-        rows.append({
-            "kind": "dimension",
-            "object": dim,
-            "canonical_unit": "标准文本",
-            "normalization_rule": "组织别名归一后精确匹配",
-            "rule": "组织别名归一后精确匹配",
-        })
-    for key, spec in contract.measures.items():
-        rule = f"{value_scale_rule(spec)}；{tolerance_rule(spec)}"
-        rows.append({
-            "kind": "measure",
-            "object": spec.label or key,
-            "canonical_unit": spec.unit or "原数值",
-            "normalization_rule": rule,
-            "rule": rule,
-        })
-    return {"rules": [], "rows": rows}
-
-
 @router.get("/api/runs/{run_id}/cases/{case_id}")
 def get_case(run_id: str, case_id: str) -> Dict[str, Any]:
     detail = state()["repo"].load_case_detail(run_id, case_id)
@@ -413,7 +388,15 @@ def get_case(run_id: str, case_id: str) -> Dict[str, Any]:
             contract = CaseContract.model_validate(saved)
     if contract:
         detail["contract"] = contract.model_dump(mode="json")
-        detail["caliber_alignment"] = _caliber_alignment(contract)
+    process = detail.get("process")
+    if isinstance(process, dict):
+        # 过程评测是展示性结论，按当前规则重算，避免旧存档里的过时措辞一直挂着。
+        from evaluator.process_review import review_from_process
+        detail["process"]["review"] = review_from_process(
+            process,
+            str((detail.get("agent_answer") or {}).get("text") or ""),
+            (detail.get("result") or {}).get("agent_timings") or {},
+        )
     from evaluator.verdict import case_judgment
     detail["judgment"] = case_judgment(
         detail.get("llm_evaluation"),
@@ -425,6 +408,9 @@ def get_case(run_id: str, case_id: str) -> Dict[str, Any]:
 class VerdictBody(BaseModel):
     verdict: Optional[str] = None
     note: str = ""
+    reason_code: Optional[str] = None
+    dimensions: List[str] = []
+    evidence: str = ""
 
 
 class SqlRecheckBody(BaseModel):
@@ -456,21 +442,63 @@ def set_verdict(run_id: str, case_id: str, body: VerdictBody) -> Dict[str, Any]:
     st = state()
     if not st["repo"].get_run(run_id):
         _error("not_found", "run not found", 404)
-    if not st["repo"].load_case_detail(run_id, case_id):
+    detail = st["repo"].load_case_detail(run_id, case_id)
+    if not detail:
         _error("not_found", "case not found", 404)
     try:
         verdict = normalize_manual_verdict(body.verdict)
     except ValueError as exc:
         _error("invalid_verdict", str(exc))
     st["repo"].save_verdict(run_id, case_id, verdict, body.note)
+    annotation = None
+    if verdict and body.reason_code:
+        from evaluator.annotations import append_annotation
+
+        artifact = detail.get("llm_evaluation") or {}
+        auto_verdict = case_judgment(artifact).get("auto_verdict") or ""
+        if verdict != auto_verdict:
+            try:
+                annotation = append_annotation(
+                    run_id=run_id,
+                    case_id=case_id,
+                    auto_verdict=auto_verdict,
+                    manual_verdict=verdict,
+                    reason_code=body.reason_code,
+                    dimensions=body.dimensions,
+                    note=body.note,
+                    evidence=body.evidence,
+                    prompt_version=str(artifact.get("prompt_version") or ""),
+                    model=str(artifact.get("model") or ""),
+                )
+            except ValueError as exc:
+                _error("invalid_annotation", str(exc))
     metrics = _refresh_headline(st["repo"], run_id, st["contracts"])
     return {
         "ok": True,
         "verdict": verdict,
         "note": body.note,
+        "annotation": annotation,
         "judgment": (metrics.get("case_judgments") or {}).get(case_id),
         "headline": metrics.get("headline"),
     }
+
+
+@router.get("/api/runs/{run_id}/cases/{case_id}/annotations")
+def case_annotations(run_id: str, case_id: str) -> Dict[str, Any]:
+    st = state()
+    if not any(row.get("case_id") == case_id for row in st["repo"].list_cases(run_id)):
+        _error("not_found", "case not found", 404)
+    from evaluator.annotations import for_case, load_annotations
+
+    rows = for_case(load_annotations(), run_id, case_id)
+    return {"annotations": rows, "latest": rows[0] if rows else None}
+
+
+@router.get("/api/annotations/summary")
+def annotations_summary(run_id: Optional[str] = None) -> Dict[str, Any]:
+    from evaluator.annotations import load_annotations, summarize
+
+    return summarize(load_annotations(), run_id)
 
 
 def _export_stamp(run: Dict[str, Any], timezone_name: str = "Asia/Shanghai") -> str:
