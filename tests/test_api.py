@@ -23,7 +23,7 @@ def test_health_reports_golden_and_contracts(tmp_path):
     assert health.status_code == 200
     payload = health.json()
     assert payload["golden"] == "ok"
-    assert payload["contracts"] == 141
+    assert payload["contracts"] == 142
     assert "evaluator_llm" in payload
 
 
@@ -32,8 +32,8 @@ def test_catalog_lists_numeric_cases(tmp_path):
     from evaluator.app import app
 
     payload = TestClient(app).get("/api/catalog").json()
-    assert payload["total"] == 141
-    assert payload["numeric"] == 141
+    assert payload["total"] == 142
+    assert payload["numeric"] == 142
     assert payload["verified"] == 16
     assert sum(1 for c in payload["cases"] if c["business_verified"]) == 16
     assert payload["cases"][0]["case_id"]

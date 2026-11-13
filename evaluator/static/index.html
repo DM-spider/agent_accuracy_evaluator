@@ -1,10 +1,10 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>数值准确性测评</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261106j">
+  <link rel="stylesheet" href="/static/styles.css?v=20261111a">
 </head>
 <body>
   <header class="topbar">
@@ -33,11 +33,16 @@
           <option value="percategory2">每类 2 题（10 题）</option>
           <option value="percategoryrandom5">每类随机 5 题（25 题）</option>
           <option value="custom">指定题号</option>
+          <option value="adhoc">自定义题目（临时题）</option>
           <option value="all">全部</option>
         </select>
         <div id="custom-ids" hidden>
           <label>指定题号（逗号分隔）</label>
           <input id="case-ids" placeholder="CX-001, LS-001, DMA-001">
+        </div>
+        <div id="adhoc-questions" hidden>
+          <label>题目（一行一题；命中黄金题用原题，未命中套用占位基准）</label>
+          <textarea id="adhoc-text" rows="6" placeholder="本分公司现在高漏耗小区有哪些？&#10;兴华花园漏损率趋势如何？"></textarea>
         </div>
       </div>
       <label>基准时间（实时批次固定用当前时间，不可指定）</label>
@@ -51,6 +56,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/app.js?v=20261106j"></script>
+  <script src="/static/app.js?v=20261111a"></script>
 </body>
 </html>

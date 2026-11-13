@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Sequence
 
 from evaluator.answer_context import align_answer, params_for_period
+from evaluator.adhoc import is_adhoc_case
 from evaluator.llm_evidence import DEFAULT_MAX_INPUT_CHARS, build_evaluation_evidence
 from evaluator.llm_evaluation import apply_reconciliation, unevaluable_artifact, validate_numeric_differences
 from evaluator.reconcile import reconcile
@@ -265,8 +266,8 @@ class Orchestrator:
                 raise KeyError(f"unknown case_id: {missing}")
             return [self.contracts_by_id[cid] for cid in case_ids]
         if include_non_numeric:
-            return list(self.contracts)
-        return [c for c in self.contracts if c.numeric_evaluable]
+            return [c for c in self.contracts if not is_adhoc_case(c.case_id)]
+        return [c for c in self.contracts if c.numeric_evaluable and not is_adhoc_case(c.case_id)]
 
     def _evaluate_with_llm(
         self,

@@ -2,6 +2,7 @@
 """评测 REST API。"""
 from __future__ import annotations
 
+import json
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -11,11 +12,18 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from evaluator.adhoc import (
+    FALLBACK_CASE_ID,
+    build_adhoc_contracts,
+    fallback_contract,
+    is_adhoc_case,
+)
 from evaluator.agent_client import client_from_settings
 from evaluator.contract_loader import load_contracts
 from evaluator.exporter import export_html, export_json, export_xlsx
 from evaluator.golden_loader import business_verified_ids, merge_golden
 from evaluator.llm_client import LlmEvaluator
+from evaluator.models import CaseContract, RunStatus, RunSummary
 from evaluator.orchestrator import Orchestrator
 from evaluator.paths import configure_paths, ensure_runtime, golden_dir, runs_dir
 from evaluator.repository import Repository
@@ -23,7 +31,6 @@ from evaluator.run_context import build_run_context
 from evaluator.settings import db_password, load_settings, platform_login_session
 from evaluator.sql_executor import SqlExecutor, make_pg_connector
 from evaluator.session_guard import SessionGuard
-from evaluator.models import RunSummary, RunStatus
 from evaluator.verdict import case_judgment, headline_from_metrics, normalize_manual_verdict, parse_threshold
 
 router = APIRouter()
@@ -38,11 +45,25 @@ class CreateRunBody(BaseModel):
     anchor_time: Optional[str] = None
     agent_name: Optional[str] = None
     consistency_threshold: Optional[float] = None
+    # 临时题：在弹窗里直接粘贴的题目；命不中黄金题时套用 TMP-000 的 SQL 基准。
+    adhoc_questions: Optional[List[str]] = None
 
 
 def _contracts_by_id(st: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     st = st or state()
     return {c.case_id: c for c in st["contracts"]}
+
+
+def _run_contracts(st: Dict[str, Any], run_id: str) -> Dict[str, Any]:
+    """优先读批次快照：临时题不在全局目录里，只能从快照还原。"""
+    snapshot = st["repo"].run_dir(run_id) / "contracts_snapshot.json"
+    if snapshot.exists():
+        try:
+            payload = json.loads(snapshot.read_text(encoding="utf-8"))
+            return {item["case_id"]: CaseContract.model_validate(item) for item in payload}
+        except (OSError, ValueError, KeyError):
+            pass
+    return _contracts_by_id(st)
 
 
 def bootstrap(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -51,6 +72,9 @@ def bootstrap(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     ensure_runtime()
     repo = Repository()
     contracts = load_contracts()
+    # 黄金集末尾的占位题：golden_builder 重新生成后仍保证存在，用来给临时题提供基准。
+    if not any(c.case_id == FALLBACK_CASE_ID for c in contracts):
+        contracts = [*contracts, fallback_contract()]
     # 缺黄金集时降级启动（健康检查显示 golden: missing）。
     try:
         golden = merge_golden()
@@ -170,7 +194,11 @@ def create_run(body: CreateRunBody) -> Dict[str, Any]:
         threshold = parse_threshold(body.consistency_threshold) if body.consistency_threshold is not None else 1.0
     except (TypeError, ValueError) as exc:
         _error("invalid_threshold", str(exc))
-    run_contracts = st["contracts"]
+    try:
+        adhoc = build_adhoc_contracts(body.adhoc_questions, st["contracts"]) if body.adhoc_questions is not None else None
+    except ValueError as exc:
+        _error("invalid_adhoc_questions", str(exc))
+    run_contracts = adhoc or st["contracts"]
     llm_evaluator = LlmEvaluator(settings.get("evaluator_llm") or {})
     ctx = build_run_context(
         datetime.now(timezone.utc),
@@ -179,7 +207,7 @@ def create_run(body: CreateRunBody) -> Dict[str, Any]:
         latest_periods={},
     )
     ctx = ctx.model_copy(update={"consistency_threshold": threshold})
-    case_ids = body.case_ids
+    case_ids = [c.case_id for c in adhoc] if adhoc else body.case_ids
     client = client_from_settings(settings)
     password = db_password(settings)
     if not password or not (settings.get("database") or {}).get("user"):
@@ -188,7 +216,10 @@ def create_run(body: CreateRunBody) -> Dict[str, Any]:
         if not all((client.session_id, client.task_id, client.template_id, client.org_id, client.login_session)):
             _error("platform_not_configured", "请在 settings.toml 的 platform.curl 粘贴完整消息请求（Copy as cURL bash）")
         if not case_ids:
-            case_ids = [c.case_id for c in st["contracts"] if c.numeric_evaluable and c.realtime_ready][:10]
+            case_ids = [
+                c.case_id for c in st["contracts"]
+                if c.numeric_evaluable and c.realtime_ready and not is_adhoc_case(c.case_id)
+            ][:10]
     elif not client.url:
         _error("agent_not_configured", "智能体接口未配置")
     connector = make_pg_connector(settings, password)
@@ -199,7 +230,7 @@ def create_run(body: CreateRunBody) -> Dict[str, Any]:
     )
 
     known_ids = {c.case_id for c in run_contracts}
-    if case_ids and (len(set(case_ids)) != len(case_ids) or set(case_ids) - known_ids):
+    if adhoc is None and case_ids and (len(set(case_ids)) != len(case_ids) or set(case_ids) - known_ids):
         _error("invalid_case_ids", "题号必须存在且不能重复")
     guard = None
     if not _LIVE_LOCK.acquire(blocking=False):
@@ -318,7 +349,7 @@ def get_progress(run_id: str) -> Dict[str, Any]:
     current = pending[0] if pending else None
     current_question = None
     if current:
-        contract = _contracts_by_id(st).get(current)
+        contract = _run_contracts(st, run_id).get(current)
         current_question = contract.question if contract else None
     return {
         "done": len(finished) if run.get("status") == "RUNNING" else summary.get("progress_done"),
@@ -344,7 +375,7 @@ def list_cases(
 ) -> Dict[str, Any]:
     st = state()
     items = st["repo"].list_cases(run_id)
-    contracts = _contracts_by_id(st)
+    contracts = _run_contracts(st, run_id)
     from evaluator.evaluation_metrics import run_evaluation_metrics
     judgments = (run_evaluation_metrics(st["repo"], run_id, list(contracts.values())).get("case_judgments") or {})
     out = []
@@ -378,14 +409,7 @@ def get_case(run_id: str, case_id: str) -> Dict[str, Any]:
     idx = ids.index(case_id) if case_id in ids else -1
     detail["prev_case_id"] = ids[idx - 1] if idx > 0 else None
     detail["next_case_id"] = ids[idx + 1] if 0 <= idx < len(ids) - 1 else None
-    contract = _contracts_by_id().get(case_id)
-    snapshot_path = state()["repo"].run_dir(run_id) / "contracts_snapshot.json"
-    if snapshot_path.exists():
-        import json
-        from evaluator.models import CaseContract
-        saved = next((c for c in json.loads(snapshot_path.read_text(encoding="utf-8")) if c["case_id"] == case_id), None)
-        if saved:
-            contract = CaseContract.model_validate(saved)
+    contract = _run_contracts(state(), run_id).get(case_id)
     if contract:
         detail["contract"] = contract.model_dump(mode="json")
     process = detail.get("process")

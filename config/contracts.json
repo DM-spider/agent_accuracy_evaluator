@@ -9930,6 +9930,52 @@
       ],
       "review_required": [],
       "not_scored_reason": null
+    },
+    {
+      "case_id": "TMP-000",
+      "question": "未收录问题（临时题占位）",
+      "result_type": "stat",
+      "numeric_evaluable": true,
+      "realtime_ready": true,
+      "sql_template": "SELECT -999999 AS \"未收录占位值\"",
+      "sql_source": "",
+      "parameter_resolver": "none",
+      "dimensions": [],
+      "row_key": [],
+      "dimension_columns": {},
+      "measures": {
+        "未收录占位值": {
+          "label": "未收录占位值",
+          "aliases": [
+            "未收录占位值"
+          ],
+          "unit": "",
+          "sql_column": "未收录占位值",
+          "value_scale": "count",
+          "required": true,
+          "tolerance": {
+            "kind": "abs",
+            "eps": 0.0001,
+            "abs_floor": 0.0
+          },
+          "aggregation": "",
+          "period_role": ""
+        }
+      },
+      "coverage_policy": {
+        "mode": "all_fields",
+        "minimum": 1.0,
+        "n": null,
+        "score_order": false
+      },
+      "scene_big": "临时题",
+      "category": "TMP",
+      "indicator_type": "未收录问题占位",
+      "caliber": "临时题占位：无专属 SQL 基准，SQL 固定返回未收录占位值 -999999；回答给不出该值即不合格。",
+      "notes": "黄金集之外的输入题统一套用本题基准；本题不参与任何自动选题范围。",
+      "roles": [],
+      "review_required": [],
+      "not_scored_reason": null
     }
   ]
 }

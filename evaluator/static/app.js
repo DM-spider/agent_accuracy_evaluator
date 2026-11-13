@@ -376,7 +376,8 @@ function shuffled(items) {
 
 async function questionCases(all = false, predicate = null) {
   const catalog = await api("/api/catalog");
-  let cases = catalog.cases || [];
+  // 占位题 TMP-000 只给临时题提供基准，不进任何自动选题范围。
+  let cases = (catalog.cases || []).filter(item => !String(item.case_id || "").startsWith("TMP-"));
   if (!all) cases = cases.filter(item => item.numeric_evaluable && item.realtime_ready);
   if (predicate) cases = cases.filter(predicate);
   return cases;
@@ -437,6 +438,12 @@ function applyCreateRunUi() {
   document.getElementById("anchor").disabled = true;
   document.getElementById("anchor").value = "";
   document.getElementById("custom-ids").hidden = scope.value !== "custom";
+  document.getElementById("adhoc-questions").hidden = scope.value !== "adhoc";
+}
+
+function adhocQuestionList() {
+  const raw = document.getElementById("adhoc-text").value.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+  return [...new Set(raw)];
 }
 
 async function startRun() {
@@ -445,13 +452,21 @@ async function startRun() {
   document.getElementById("start-error").textContent = "";
   try {
   const scope = document.getElementById("scope").value;
-  const case_ids = await resolveScope(scope);
-  const body = {
-    numeric_only: scope !== "all",
-    case_ids,
-    anchor_time: document.getElementById("anchor").value || null,
-    agent_name: document.getElementById("agent-name").value || "water-loss-agent",
-  };
+  const agentName = document.getElementById("agent-name").value || "water-loss-agent";
+  let body;
+  if (scope === "adhoc") {
+    const questions = adhocQuestionList();
+    if (!questions.length) throw new Error("请至少输入一道题");
+    body = { numeric_only: true, adhoc_questions: questions, anchor_time: null, agent_name: agentName };
+  } else {
+    const case_ids = await resolveScope(scope);
+    body = {
+      numeric_only: scope !== "all",
+      case_ids,
+      anchor_time: document.getElementById("anchor").value || null,
+      agent_name: agentName,
+    };
+  }
   const created = await api("/api/runs", { method: "POST", body: JSON.stringify(body) });
   location.href = "/runs/" + created.run_id;
   } catch (err) {

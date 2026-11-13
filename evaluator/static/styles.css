@@ -191,6 +191,7 @@ tr.clickable:hover { background: #f3eee0; }
 .dialog-backdrop.show { display: flex; }
 .dialog { width: min(560px, 92vw); background: var(--sheet); padding: 22px; border: 1px solid var(--line); box-shadow: var(--shadow); }
 .dialog label { display: block; margin: 10px 0 6px; color: var(--muted); font-size: 12px; }
+.dialog textarea { width: 100%; min-height: 108px; resize: vertical; line-height: 1.6; font-family: inherit; }
 
 .empty { padding: 32px; text-align: center; color: var(--muted); border: 1px dashed var(--line); background: rgba(255,255,255,0.4); }
 
